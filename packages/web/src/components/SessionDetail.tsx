@@ -26,7 +26,7 @@ interface SessionDetailProps {
 // ── Helpers ──────────────────────────────────────────────────────────
 
 const activityMeta: Record<string, { label: string; color: string }> = {
-  active: { label: "Active", color: "var(--color-status-working)" },
+  active: { label: "Thinking", color: "var(--color-status-working)" },
   ready: { label: "Ready", color: "var(--color-status-ready)" },
   idle: { label: "Idle", color: "var(--color-status-idle)" },
   waiting_input: { label: "Waiting for input", color: "var(--color-status-attention)" },
