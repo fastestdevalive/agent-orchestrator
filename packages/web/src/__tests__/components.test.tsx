@@ -12,14 +12,14 @@ import { makeSession, makePR } from "./helpers";
 describe("ActivityDot", () => {
   it("renders label pill with activity name", () => {
     render(<ActivityDot activity="active" />);
-    expect(screen.getByText("active")).toBeInTheDocument();
+    expect(screen.getByText("thinking")).toBeInTheDocument();
   });
 
   it("renders all known activity states", () => {
     const states = ["active", "ready", "idle", "waiting_input", "blocked", "exited"] as const;
     for (const state of states) {
       const { unmount } = render(<ActivityDot activity={state} />);
-      const expected = state === "waiting_input" ? "waiting" : state;
+      const expected = state === "waiting_input" ? "waiting" : state === "active" ? "thinking" : state;
       expect(screen.getByText(expected)).toBeInTheDocument();
       unmount();
     }
@@ -38,7 +38,7 @@ describe("ActivityDot", () => {
   it("renders only a dot in dotOnly mode (no label)", () => {
     render(<ActivityDot activity="active" dotOnly />);
     // No label text should appear in dotOnly mode
-    expect(screen.queryByText("active")).not.toBeInTheDocument();
+    expect(screen.queryByText("thinking")).not.toBeInTheDocument();
   });
 });
 
