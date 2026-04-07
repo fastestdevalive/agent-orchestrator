@@ -7,6 +7,7 @@ import {
   setTerminalConnection,
   clearTerminalConnection,
 } from "@/lib/terminal-connection-store";
+import { createStubSession } from "@/lib/stub-session";
 import { WorkspaceLayout } from "@/components/workspace/WorkspaceLayout";
 import { FileTree } from "@/components/workspace/FileTree";
 import { FilePreview } from "@/components/workspace/FilePreview";
@@ -36,26 +37,6 @@ function buildSessionTitle(session: DashboardSession): string {
   }
 
   return emoji ? `${emoji} ${id} | ${detail}` : `${id} | ${detail}`;
-}
-
-function createStubSession(id: string, projectId: string): DashboardSession {
-  return {
-    id,
-    projectId,
-    status: "working",
-    activity: null,
-    branch: null,
-    issueId: null,
-    issueUrl: null,
-    issueLabel: null,
-    issueTitle: null,
-    summary: null,
-    summaryIsFallback: false,
-    createdAt: new Date().toISOString(),
-    lastActivityAt: new Date().toISOString(),
-    pr: null,
-    metadata: {},
-  };
 }
 
 export default function SessionPage() {
