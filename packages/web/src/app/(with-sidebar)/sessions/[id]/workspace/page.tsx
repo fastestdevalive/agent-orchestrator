@@ -1,9 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { useParams, useSearchParams } from "next/navigation";
+import { useParams } from "next/navigation";
 import { type DashboardSession } from "@/lib/types";
-import { createStubSession } from "@/lib/stub-session";
 import { WorkspaceLayout } from "@/components/workspace/WorkspaceLayout";
 import { FileTree } from "@/components/workspace/FileTree";
 import { FilePreview } from "@/components/workspace/FilePreview";
@@ -13,11 +12,10 @@ import { isOrchestratorSession } from "@composio/ao-core/types";
 
 export default function WorkspacePage() {
   const params = useParams();
-  const searchParams = useSearchParams();
   const id = params.id as string;
-  const projectId = searchParams.get("project") ?? "";
 
   const [session, setSession] = useState<DashboardSession | null>(null);
+  const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   const fetchSession = useCallback(async () => {
@@ -25,6 +23,7 @@ export default function WorkspacePage() {
       const res = await fetch(`/api/sessions/${encodeURIComponent(id)}`);
       if (res.status === 404) {
         setError("Session not found");
+        setLoading(false);
         return;
       }
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -34,6 +33,8 @@ export default function WorkspacePage() {
     } catch (err) {
       console.error("Failed to fetch session:", err);
       setError("Failed to load session");
+    } finally {
+      setLoading(false);
     }
   }, [id]);
 
@@ -50,19 +51,28 @@ export default function WorkspacePage() {
     return () => clearInterval(interval);
   }, [fetchSession]);
 
-  if (error) {
+  if (loading) {
     return (
       <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>
-        <div style={{ color: "var(--color-status-error)", fontSize: "14px" }}>{error}</div>
+        <div style={{ color: "var(--color-text-secondary)", fontSize: "14px" }}>Loading workspace...</div>
       </div>
     );
   }
 
-  const displaySession = session ?? createStubSession(id, projectId);
-  const isOrchestrator = session ? isOrchestratorSession(session) : false;
+  if (error || !session) {
+    return (
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100vh" }}>
+        <div style={{ color: "var(--color-status-error)", fontSize: "14px" }}>
+          {error || "Session not found"}
+        </div>
+      </div>
+    );
+  }
+
+  const isOrchestrator = isOrchestratorSession(session);
 
   return (
-    <WorkspaceLayout session={displaySession}>
+    <WorkspaceLayout session={session}>
       {{
         fileTree: (file, { showChangedOnly, onFileSelected }) => (
           <FileTree
@@ -84,10 +94,10 @@ export default function WorkspacePage() {
             variant={isOrchestrator ? "orchestrator" : "agent"}
             height="100%"
             headerLabel="TERMINAL"
-            isOpenCodeSession={displaySession.metadata["agent"] === "opencode"}
+            isOpenCodeSession={session.metadata["agent"] === "opencode"}
             reloadCommand={
-              displaySession.metadata["agent"] === "opencode" && displaySession.metadata["opencodeSessionId"]
-                ? `/exit\nopencode --session ${displaySession.metadata["opencodeSessionId"]}\n`
+              session.metadata["agent"] === "opencode" && session.metadata["opencodeSessionId"]
+                ? `/exit\nopencode --session ${session.metadata["opencodeSessionId"]}\n`
                 : undefined
             }
           />
