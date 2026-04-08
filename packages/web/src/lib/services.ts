@@ -158,7 +158,11 @@ async function labelIssuesForVerification(
   );
 
   for (const session of mergedSessions) {
-    const key = `${session.projectId}:${session.issueId}`;
+    const issueId = session.issueId;
+    if (!issueId) {
+      continue;
+    }
+    const key = `${session.projectId}:${issueId}`;
     const project = config.projects[session.projectId];
     if (!project?.tracker) {
       processedIssues.add(key);
@@ -173,7 +177,7 @@ async function labelIssuesForVerification(
 
     try {
       await tracker.updateIssue(
-        session.issueId!,
+        issueId,
         {
           labels: ["merged-unverified"],
           removeLabels: ["agent:backlog", "agent:in-progress"],
@@ -182,7 +186,7 @@ async function labelIssuesForVerification(
         project,
       );
     } catch (err) {
-      console.error(`[backlog] Failed to close issue ${session.issueId}:`, err);
+      console.error(`[backlog] Failed to close issue ${issueId}:`, err);
     }
     processedIssues.add(key);
   }
@@ -245,9 +249,12 @@ export async function pollBacklog(): Promise<void> {
     const workerSessions = allSessions.filter(
       (session) => !isOrchestratorSession(session) && !TERMINAL_STATUSES.has(session.status),
     );
-    const activeIssueIds = new Set(
-      workerSessions.filter((s) => s.issueId).map((s) => s.issueId!.toLowerCase()),
-    );
+    const activeIssueIds = new Set<string>();
+    for (const s of workerSessions) {
+      if (s.issueId) {
+        activeIssueIds.add(s.issueId.toLowerCase());
+      }
+    }
 
     // Auto-scaling: respect max concurrent agents
     let availableSlots = MAX_CONCURRENT_AGENTS - workerSessions.length;
