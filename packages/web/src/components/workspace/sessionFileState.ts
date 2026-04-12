@@ -39,7 +39,11 @@ function readStored(sessionId: string): StoredState | null {
       };
     }
 
-    if (typeof parsed.currentFile !== "string" || typeof parsed.files !== "object" || !parsed.files) {
+    if (
+      typeof parsed.currentFile !== "string" ||
+      typeof parsed.files !== "object" ||
+      !parsed.files
+    ) {
       return null;
     }
     return parsed as unknown as StoredState;
@@ -61,6 +65,31 @@ function writeStored(sessionId: string, state: StoredState): void {
     window.sessionStorage.setItem(getStorageKey(sessionId), JSON.stringify(state));
   } catch {
     // ignore storage write failures
+  }
+}
+
+const DIFF_COLLAPSED_KEY = "workspace:diff-collapsed";
+
+function getDiffCollapsedKey(sessionId: string): string {
+  return `${DIFF_COLLAPSED_KEY}:${sessionId}`;
+}
+
+export function loadDiffCollapsed(sessionId: string): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const raw = window.sessionStorage.getItem(getDiffCollapsedKey(sessionId));
+    return raw === "true";
+  } catch {
+    return false;
+  }
+}
+
+export function saveDiffCollapsed(sessionId: string, collapsed: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(getDiffCollapsedKey(sessionId), String(collapsed));
+  } catch {
+    // ignore
   }
 }
 
