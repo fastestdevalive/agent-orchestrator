@@ -67,10 +67,18 @@ function saveFileTreeSettings(settings: FileTreeSettings): void {
 }
 
 export function WorkspaceLayout({ session, children }: WorkspaceLayoutProps) {
-  const { sizes, collapsed, setSizes, toggleCollapsed, isHydrated, verticalLayout, setVerticalLayout, verticalSplit, setVerticalSplit, previewFontSize, setPreviewFontSize } = usePaneSizes(
-    session.id,
-    [20, 40, 40],
-  );
+  const {
+    sizes,
+    collapsed,
+    setSizes,
+    toggleCollapsed,
+    isHydrated,
+    verticalLayout,
+    setVerticalLayout,
+    verticalSplit,
+    setVerticalSplit,
+    previewFontSize,
+  } = usePaneSizes(session.id, [20, 40, 40]);
   const containerRef = useRef<HTMLDivElement>(null);
   const previewScrollRef = useRef<HTMLDivElement>(null);
   const saveScrollTimeoutRef = useRef<number | null>(null);
@@ -121,8 +129,10 @@ export function WorkspaceLayout({ session, children }: WorkspaceLayoutProps) {
     const handler = (e: MouseEvent) => {
       const target = e.target as Node;
       if (
-        fontSizePopoverRef.current && !fontSizePopoverRef.current.contains(target) &&
-        fontSizeBtnRef.current && !fontSizeBtnRef.current.contains(target)
+        fontSizePopoverRef.current &&
+        !fontSizePopoverRef.current.contains(target) &&
+        fontSizeBtnRef.current &&
+        !fontSizeBtnRef.current.contains(target)
       ) {
         setFontSizePopoverOpen(false);
       }
@@ -273,43 +283,50 @@ export function WorkspaceLayout({ session, children }: WorkspaceLayoutProps) {
     }, 200);
   }, [session.id, selectedFile]);
 
-  const handleDragStart = useCallback((separatorIndex: number, direction: "horizontal" | "vertical", startX: number, startY: number) => {
-    const isHorizontal = direction === "horizontal";
-    const startPos = isHorizontal ? startX : startY;
-    const containerSize = isHorizontal
-      ? (containerRef.current?.clientWidth || 1)
-      : (containerRef.current?.clientHeight || 1);
+  const handleDragStart = useCallback(
+    (
+      separatorIndex: number,
+      direction: "horizontal" | "vertical",
+      startX: number,
+      startY: number,
+    ) => {
+      const isHorizontal = direction === "horizontal";
+      const startPos = isHorizontal ? startX : startY;
+      const containerSize = isHorizontal
+        ? containerRef.current?.clientWidth || 1
+        : containerRef.current?.clientHeight || 1;
 
-    // In vertical layout with vertical separator (separatorIndex === 1), use verticalSplit
-    const isVerticalRowSplit = verticalLayout && separatorIndex === 1 && direction === "vertical";
-    // In vertical layout with the column separator (separatorIndex === 0), buildTemplate
-    // normalizes only over sizes[0]+sizes[1] (not 100), so we must scale delta accordingly.
-    const isVerticalColSplit = verticalLayout && separatorIndex === 0 && direction === "horizontal";
-    const startSizes = isVerticalRowSplit ? [...verticalSplit] : [...sizes];
-    const mins = isVerticalRowSplit ? [15, 15] : [8, 15, 15];
-    // verticalSplit is a 2-element array [top, bottom], so indices are 0/1 not separatorIndex
-    const idx0 = isVerticalRowSplit ? 0 : separatorIndex;
-    const idx1 = isVerticalRowSplit ? 1 : separatorIndex + 1;
-    // Normalization factor: buildTemplate divides by the sum of the sizes it uses.
-    // For the column split in vertical layout that's sizes[0]+sizes[1]; for everything
-    // else that sum equals 100 (all three panes).
-    const normFactor = isVerticalColSplit ? (startSizes[0] + startSizes[1]) : 100;
+      // In vertical layout with vertical separator (separatorIndex === 1), use verticalSplit
+      const isVerticalRowSplit = verticalLayout && separatorIndex === 1 && direction === "vertical";
+      // In vertical layout with the column separator (separatorIndex === 0), buildTemplate
+      // normalizes only over sizes[0]+sizes[1] (not 100), so we must scale delta accordingly.
+      const isVerticalColSplit =
+        verticalLayout && separatorIndex === 0 && direction === "horizontal";
+      const startSizes = isVerticalRowSplit ? [...verticalSplit] : [...sizes];
+      const mins = isVerticalRowSplit ? [15, 15] : [8, 15, 15];
+      // verticalSplit is a 2-element array [top, bottom], so indices are 0/1 not separatorIndex
+      const idx0 = isVerticalRowSplit ? 0 : separatorIndex;
+      const idx1 = isVerticalRowSplit ? 1 : separatorIndex + 1;
+      // Normalization factor: buildTemplate divides by the sum of the sizes it uses.
+      // For the column split in vertical layout that's sizes[0]+sizes[1]; for everything
+      // else that sum equals 100 (all three panes).
+      const normFactor = isVerticalColSplit ? startSizes[0] + startSizes[1] : 100;
 
-    function applyDelta(currentPos: number) {
-      const deltaPct = ((currentPos - startPos) / containerSize) * normFactor;
-      const newSizes = [...startSizes];
-      newSizes[idx0] = Math.max(mins[idx0], startSizes[idx0] + deltaPct);
-      newSizes[idx1] = Math.max(mins[idx1], startSizes[idx1] - deltaPct);
+      function applyDelta(currentPos: number) {
+        const deltaPct = ((currentPos - startPos) / containerSize) * normFactor;
+        const newSizes = [...startSizes];
+        newSizes[idx0] = Math.max(mins[idx0], startSizes[idx0] + deltaPct);
+        newSizes[idx1] = Math.max(mins[idx1], startSizes[idx1] - deltaPct);
 
-      if (isVerticalRowSplit) {
-        setVerticalSplit(newSizes as [number, number]);
-      } else {
-        setSizes(newSizes);
+        if (isVerticalRowSplit) {
+          setVerticalSplit(newSizes as [number, number]);
+        } else {
+          setSizes(newSizes);
+        }
       }
-    }
 
-    function onMouseMove(moveEvent: MouseEvent) {
-      applyDelta(isHorizontal ? moveEvent.clientX : moveEvent.clientY);
+      function onMouseMove(moveEvent: MouseEvent) {
+        applyDelta(isHorizontal ? moveEvent.clientX : moveEvent.clientY);
       }
       function onTouchMove(moveEvent: TouchEvent) {
         if (moveEvent.touches.length !== 1) return;
@@ -327,14 +344,16 @@ export function WorkspaceLayout({ session, children }: WorkspaceLayoutProps) {
         document.body.style.userSelect = "";
       }
 
-    document.addEventListener("mousemove", onMouseMove);
-    document.addEventListener("mouseup", cleanup);
-    document.addEventListener("touchmove", onTouchMove, { passive: false });
-    document.addEventListener("touchend", cleanup);
-    document.addEventListener("touchcancel", cleanup);
-    document.body.style.cursor = isHorizontal ? "col-resize" : "row-resize";
-    document.body.style.userSelect = "none";
-  }, [sizes, setSizes, verticalLayout, verticalSplit, setVerticalSplit]);
+      document.addEventListener("mousemove", onMouseMove);
+      document.addEventListener("mouseup", cleanup);
+      document.addEventListener("touchmove", onTouchMove, { passive: false });
+      document.addEventListener("touchend", cleanup);
+      document.addEventListener("touchcancel", cleanup);
+      document.body.style.cursor = isHorizontal ? "col-resize" : "row-resize";
+      document.body.style.userSelect = "none";
+    },
+    [sizes, setSizes, verticalLayout, verticalSplit, setVerticalSplit],
+  );
 
   const onSeparatorMouse = useCallback(
     (idx: number, dir: "horizontal" | "vertical", e: React.MouseEvent) => {
@@ -552,7 +571,15 @@ export function WorkspaceLayout({ session, children }: WorkspaceLayoutProps) {
             {previewFileName}
           </span>
         )}
-<div style={{ display: "flex", alignItems: "center", gap: "2px", marginLeft: "auto", position: "relative" }}>
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: "2px",
+            marginLeft: "auto",
+            position: "relative",
+          }}
+        >
           {diffMode && (
             <button
               onClick={() => {
@@ -579,108 +606,20 @@ export function WorkspaceLayout({ session, children }: WorkspaceLayoutProps) {
               </svg>
             </button>
           )}
-          <button
-            type="button"
-            ref={fontSizeBtnRef}
-            onClick={() => setFontSizePopoverOpen((v) => !v)}
-            title="Preview text size"
-            className={`workspace-pane-header-btn ${fontSizePopoverOpen ? "workspace-pane-header-btn--active" : ""}`}
-          >
-            <span style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.04em" }}>Aa</span>
-          </button>
-          {fontSizePopoverOpen && (
-            <div ref={fontSizePopoverRef} className="workspace-file-tree-settings-popover">
-              <div className="workspace-file-tree-settings-title">Preview text size</div>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 0" }}>
-                <input
-                  type="range"
-                  min="10"
-                  max="18"
-                  step="1"
-                  value={previewFontSize}
-                  onChange={(e) => setPreviewFontSize(parseInt(e.target.value, 10))}
-                  className="h-1 w-32 cursor-pointer accent-[var(--color-accent)]"
-                />
-                <span style={{ minWidth: "2ch", textAlign: "center", fontFamily: "ui-monospace", fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)" }}>
-                  {previewFontSize}px
-                </span>
-              </div>
-            </div>
-          )}
-          <button
-            onClick={() => setQuickOpenVisible(true)}
-            title="Search files (Ctrl+P)"
-            className="workspace-pane-header-btn"
-          >
-              <svg
-                width="13"
-                height="13"
-                viewBox="0 0 24 24"
-                fill="none"
-                stroke="currentColor"
-                strokeWidth="2"
-                style={{
-                  transform: diffCollapsed ? "rotate(-90deg)" : "rotate(0deg)",
-                  transition: "transform 0.15s",
-                }}
-              >
-                <path d="M6 9l6 6 6-6" />
-              </svg>
-            </button>
-=======
-        <div style={{ display: "flex", alignItems: "center", gap: "2px", marginLeft: "auto", position: "relative" }}>
-          <button
-            type="button"
-            ref={fontSizeBtnRef}
-            onClick={() => setFontSizePopoverOpen((v) => !v)}
-            title="Preview text size"
-            className={`workspace-pane-header-btn ${fontSizePopoverOpen ? "workspace-pane-header-btn--active" : ""}`}
-          >
-            <span style={{ fontSize: "11px", fontWeight: 600, letterSpacing: "0.04em" }}>Aa</span>
-          </button>
-          {fontSizePopoverOpen && (
-            <div ref={fontSizePopoverRef} className="workspace-file-tree-settings-popover">
-              <div className="workspace-file-tree-settings-title">Preview text size</div>
-              <div style={{ display: "flex", alignItems: "center", gap: "8px", padding: "8px 0" }}>
-                <input
-                  type="range"
-                  min="10"
-                  max="18"
-                  step="1"
-                  value={previewFontSize}
-                  onChange={(e) => setPreviewFontSize(parseInt(e.target.value, 10))}
-                  className="h-1 w-32 cursor-pointer accent-[var(--color-accent)]"
-                />
-                <span style={{ minWidth: "2ch", textAlign: "center", fontFamily: "ui-monospace", fontSize: "11px", fontWeight: 600, color: "var(--color-text-secondary)" }}>
-                  {previewFontSize}px
-                </span>
-              </div>
-            </div>
-          )}
-          <button
-            onClick={() => setQuickOpenVisible(true)}
-            title="Search files (Ctrl+P)"
-            className="workspace-pane-header-btn"
-          >
-            <svg
-              width="13"
-              height="13"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-            >
-              <circle cx="11" cy="11" r="8" />
-              <line x1="21" y1="21" x2="16.65" y2="16.65" />
-            </svg>
-          </button>
         </div>
       </div>
       <div
         ref={previewScrollRef}
         onScroll={handlePreviewScroll}
         className="workspace-preview-scroll"
-        style={{ flex: 1, overflow: "auto", minHeight: 0, "--preview-font-size": `${previewFontSize}px` } as React.CSSProperties}
+        style={
+          {
+            flex: 1,
+            overflow: "auto",
+            minHeight: 0,
+            "--preview-font-size": `${previewFontSize}px`,
+          } as React.CSSProperties
+        }
       >
         {children.preview(selectedFile, { diffMode, diffCollapsed })}
       </div>
