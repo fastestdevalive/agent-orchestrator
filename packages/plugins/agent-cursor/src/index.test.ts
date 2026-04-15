@@ -159,7 +159,7 @@ describe("getLaunchCommand", () => {
   const agent = create();
 
   it("generates base command", () => {
-    expect(agent.getLaunchCommand(makeLaunchConfig())).toBe("agent");
+    expect(agent.getLaunchCommand(makeLaunchConfig())).toBe("agent --force");
   });
 
   it("includes --force --sandbox disabled --approve-mcps when permissions=permissionless", () => {
@@ -194,7 +194,7 @@ describe("getLaunchCommand", () => {
 
   it("combines all options", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ permissions: "permissionless", model: "sonnet", prompt: "Go" }),
+      makeLaunchConfig({ permissions: "permissionless", model: "gpt-5", prompt: "Go" }),
     );
     expect(cmd).toBe("agent --force --sandbox disabled --approve-mcps --model 'sonnet' -- 'Go'");
   });
@@ -206,7 +206,7 @@ describe("getLaunchCommand", () => {
 
   it("omits optional flags when not provided", () => {
     const cmd = agent.getLaunchCommand(makeLaunchConfig());
-    expect(cmd).not.toContain("--force");
+    expect(cmd).toContain("--force");
     expect(cmd).not.toContain("--model");
   });
 
@@ -459,12 +459,12 @@ describe("getSessionInfo", () => {
 describe("getRestoreCommand", () => {
   const agent = create();
 
-  it("returns null (cursor does not support session resume)", async () => {
+  it("returns command to continue with force mode", async () => {
     const result = await agent.getRestoreCommand!(
       makeSession(),
       { name: "proj", repo: "o/r", path: "/p", defaultBranch: "main", sessionPrefix: "p" },
     );
-    expect(result).toBeNull();
+    expect(result).toBe("agent --force --continue");
   });
 });
 

@@ -5,6 +5,7 @@ import {
   type ActivityDetection,
   type ActivityState,
   type PluginModule,
+  type ProjectConfig,
   type RuntimeHandle,
   type Session,
 } from "@aoagents/ao-core";
@@ -39,6 +40,11 @@ function createAmpAgent(): Agent {
       // Amp launches in interactive mode without any flags
       // Prompt will be delivered post-launch via runtime.sendMessage()
       return "amp";
+    },
+
+    async getRestoreCommand(_session: Session, _project: ProjectConfig): Promise<string | null> {
+      // Continue the latest thread in this workspace so restore keeps context.
+      return "amp threads continue --last";
     },
 
     getEnvironment(config: AgentLaunchConfig): Record<string, string> {

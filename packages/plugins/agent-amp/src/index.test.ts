@@ -139,6 +139,18 @@ describe("getLaunchCommand", () => {
 });
 
 // =========================================================================
+// getRestoreCommand
+// =========================================================================
+describe("getRestoreCommand", () => {
+  const agent = create();
+
+  it("returns command to continue the latest amp thread", async () => {
+    const cmd = await agent.getRestoreCommand!(makeSession(), makeLaunchConfig().projectConfig);
+    expect(cmd).toBe("amp threads continue --last");
+  });
+});
+
+// =========================================================================
 // getEnvironment
 // =========================================================================
 describe("getEnvironment", () => {
