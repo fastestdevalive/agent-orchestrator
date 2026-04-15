@@ -28,33 +28,6 @@ vi.mock("@aoagents/ao-core", async (importOriginal) => {
   };
 });
 
-// Mock fs/promises for getSessionInfo tests (readFile for .aider.chat.history.md)
-vi.mock("node:fs/promises", async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
-  };
-});
-
-// Mock activity log utilities from core
-const { mockAppendActivityEntry, mockReadLastActivityEntry, mockRecordTerminalActivity } =
-  vi.hoisted(() => ({
-    mockAppendActivityEntry: vi.fn().mockResolvedValue(undefined),
-    mockReadLastActivityEntry: vi.fn().mockResolvedValue(null),
-    mockRecordTerminalActivity: vi.fn().mockResolvedValue(undefined),
-  }));
-
-vi.mock("@composio/ao-core", async (importOriginal) => {
-  const actual = (await importOriginal()) as Record<string, unknown>;
-  return {
-    ...actual,
-    appendActivityEntry: mockAppendActivityEntry,
-    readLastActivityEntry: mockReadLastActivityEntry,
-    recordTerminalActivity: mockRecordTerminalActivity,
-  };
-});
-
 // ---------------------------------------------------------------------------
 // Hoisted mocks
 // ---------------------------------------------------------------------------

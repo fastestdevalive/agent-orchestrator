@@ -253,19 +253,23 @@ function createOpenCodeAgent(): Agent {
         sharedOptions.push("--agent", shellEscape(config.subagent));
       }
 
-      // Determine the message to send to `opencode run`:
-      // Priority: systemPromptFile > systemPrompt > config.prompt > no message (--command true)
-      let messageValue: string | undefined;
-      if (config.systemPromptFile) {
-        messageValue = `"$(cat ${shellEscape(config.systemPromptFile)})"`;
-      } else if (config.systemPrompt) {
-        messageValue = shellEscape(config.systemPrompt);
-      } else if (config.prompt) {
-        messageValue = shellEscape(config.prompt);
-      }
-
       if (config.model) {
         sharedOptions.push("--model", shellEscape(config.model));
+      }
+
+      // Build the prompt value to pass to `exec opencode --session "$SES_ID" --prompt <value>`.
+      // Priority: systemPromptFile > systemPrompt (combined with prompt) > prompt alone
+      let resumePromptValue: string | undefined;
+      if (config.systemPromptFile && config.prompt) {
+        resumePromptValue = `"$(cat ${shellEscape(config.systemPromptFile)}; printf '\\n\\n'; printf %s ${shellEscape(config.prompt)})"`;
+      } else if (config.systemPromptFile) {
+        resumePromptValue = `"$(cat ${shellEscape(config.systemPromptFile)})"`;
+      } else if (config.systemPrompt && config.prompt) {
+        resumePromptValue = shellEscape(`${config.systemPrompt}\n\n${config.prompt}`);
+      } else if (config.systemPrompt) {
+        resumePromptValue = shellEscape(config.systemPrompt);
+      } else if (config.prompt) {
+        resumePromptValue = shellEscape(config.prompt);
       }
 
       if (!existingSessionId) {
@@ -275,30 +279,29 @@ function createOpenCodeAgent(): Agent {
           "--title",
           shellEscape(`AO:${config.sessionId}`),
           ...sharedOptions,
+          "--command",
+          "true",
         ];
         const captureScript = buildSessionIdCaptureScript();
         const fallbackScript = buildSessionLookupScript();
-        const runCommandParts = ["opencode", "run", ...runOptions];
-        if (messageValue) {
-          runCommandParts.push(messageValue);
-        } else {
-          // No prompt available — create session without a message.
-          runCommandParts.push("--command", "true");
-        }
-        const runCommand = runCommandParts.join(" ");
-        const resumeOptions = [...sharedOptions];
-        const resumeOptionsSuffix = resumeOptions.length > 0 ? ` ${resumeOptions.join(" ")}` : "";
+        const runCommand = ["opencode", "run", ...runOptions].join(" ");
+        const resumePromptSuffix = resumePromptValue ? ` --prompt ${resumePromptValue}` : "";
+        const resumeOptionsSuffix =
+          sharedOptions.length > 0 ? ` ${sharedOptions.join(" ")}` : "";
         const missingSessionError = shellEscape(
           `failed to discover OpenCode session ID for AO:${config.sessionId}`,
         );
         return [
           `SES_ID=$(${runCommand} | node -e ${shellEscape(captureScript)})`,
           `if [ -z "$SES_ID" ]; then SES_ID=$(opencode session list --format json | node -e ${shellEscape(fallbackScript)} ${shellEscape(`AO:${config.sessionId}`)}); fi`,
-          `[ -n "$SES_ID" ] && exec opencode --session "$SES_ID"${resumeOptionsSuffix}; echo ${missingSessionError} >&2; exit 1`,
+          `[ -n "$SES_ID" ] && exec opencode --session "$SES_ID"${resumePromptSuffix}${resumeOptionsSuffix}; echo ${missingSessionError} >&2; exit 1`,
         ].join("; ");
       }
 
       // Existing session resume
+      if (resumePromptValue) {
+        options.push("--prompt", resumePromptValue);
+      }
       options.push(...sharedOptions);
 
       return ["opencode", ...options].join(" ");
