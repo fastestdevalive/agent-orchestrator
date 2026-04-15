@@ -1,4 +1,4 @@
-import { isOrchestratorSession } from "@composio/ao-core/types";
+import { isOrchestratorSession } from "@aoagents/ao-core/types";
 
 type ProjectWithPrefix = { sessionPrefix?: string };
 type SessionLike = { id: string; projectId: string; metadata?: Record<string, string> };
@@ -31,6 +31,14 @@ export function filterProjectSessions<T extends SessionLike>(
   return sessions.filter((session) => matchesProject(session, projectFilter, projects));
 }
 
+/** Build a project-scoped href, falling back to ?project=all when no project is active. */
+export function getProjectScopedHref(
+  basePath: "/" | "/prs",
+  projectId: string | undefined,
+): string {
+  return projectId ? `${basePath}?project=${encodeURIComponent(projectId)}` : `${basePath}?project=all`;
+}
+
 export function filterWorkerSessions<T extends SessionLike>(
   sessions: T[],
   projectFilter: string | null | undefined,
@@ -45,7 +53,7 @@ export function filterWorkerSessions<T extends SessionLike>(
         s,
         projects[s.projectId]?.sessionPrefix ?? s.projectId,
         allSessionPrefixes,
-      ) && !s.metadata?.["parent"],
+      ),
   );
   return filterProjectSessions(workers, projectFilter, projects);
 }

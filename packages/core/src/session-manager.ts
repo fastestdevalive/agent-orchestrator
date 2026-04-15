@@ -41,8 +41,6 @@ import {
   type PluginRegistry,
   type RuntimeHandle,
   type Issue,
-  type RestoreOptions,
-  type SubSession,
   PR_STATE,
 } from "./types.js";
 import {
@@ -54,7 +52,6 @@ import {
   deleteMetadata,
   listMetadata,
   reserveSessionId,
-  listSubSessionIds,
 } from "./metadata.js";
 import { buildPrompt } from "./prompt-builder.js";
 import {
@@ -66,21 +63,14 @@ import {
 } from "./paths.js";
 import { asValidOpenCodeSessionId } from "./opencode-session-id.js";
 import { normalizeOrchestratorSessionStrategy } from "./orchestrator-session-strategy.js";
-import {
-  GLOBAL_PAUSE_REASON_KEY,
-  GLOBAL_PAUSE_SOURCE_KEY,
-  GLOBAL_PAUSE_UNTIL_KEY,
-  parsePauseUntil,
-} from "./global-pause.js";
 import { sessionFromMetadata } from "./utils/session-from-metadata.js";
 import { safeJsonParse } from "./utils/validation.js";
+import { isGitBranchNameSafe } from "./utils.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
 
 const execFileAsync = promisify(execFile);
 const OPENCODE_DISCOVERY_TIMEOUT_MS = 10_000;
 const OPENCODE_INTERACTIVE_DISCOVERY_TIMEOUT_MS = 10_000;
-const OPENCODE_SESSION_LIST_CACHE_TTL_MS = 10_000;
-const MAX_TERMINAL_SUB_SESSIONS = 5;
 
 function errorIncludesSessionNotFound(err: unknown): boolean {
   if (!(err instanceof Error)) return false;
@@ -119,31 +109,8 @@ interface OpenCodeSessionListEntry {
   updatedAt?: number;
 }
 
-let _openCodeSessionListCache: {
-  promise: Promise<OpenCodeSessionListEntry[]>;
-  fetchedAt: number;
-} | null = null;
-
-/** @internal — exposed for tests to reset module-level cache between runs */
-export function _resetOpenCodeSessionListCache(): void {
-  _openCodeSessionListCache = null;
-}
-
 async function fetchOpenCodeSessionList(
   timeoutMs = OPENCODE_DISCOVERY_TIMEOUT_MS,
-): Promise<OpenCodeSessionListEntry[]> {
-  const now = Date.now();
-  if (_openCodeSessionListCache && now - _openCodeSessionListCache.fetchedAt < OPENCODE_SESSION_LIST_CACHE_TTL_MS) {
-    return _openCodeSessionListCache.promise;
-  }
-
-  const promise = fetchOpenCodeSessionListUncached(timeoutMs);
-  _openCodeSessionListCache = { promise, fetchedAt: now };
-  return promise;
-}
-
-async function fetchOpenCodeSessionListUncached(
-  timeoutMs: number,
 ): Promise<OpenCodeSessionListEntry[]> {
   try {
     const { stdout } = await execFileAsync("opencode", ["session", "list", "--format", "json"], {
@@ -310,48 +277,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
    */
   function getProjectSessionsDir(project: ProjectConfig): string {
     return getSessionsDir(config.configPath, project.path);
-  }
-
-  function getProjectPause(project: ProjectConfig): {
-    until: Date;
-    reason: string;
-    sourceSessionId: string;
-  } | null {
-    const sessionsDir = getProjectSessionsDir(project);
-
-    // Build the candidate list using name-pattern matching so we never read
-    // raw metadata for worker sessions (avoids N file reads on every hot path).
-    // Do not pre-seed the canonical ID — with the numbered orchestrator scheme
-    // ({prefix}-orchestrator-N) it will rarely exist, and pre-seeding it would
-    // cause an unconditional extra readMetadataRaw on every hot-path invocation.
-    const canonicalOrchestratorId = `${project.sessionPrefix}-orchestrator`;
-    const orchestratorPattern = new RegExp(`^${escapeRegex(project.sessionPrefix)}-orchestrator-(\\d+)$`);
-    const candidateIds = new Set<string>();
-    for (const id of listMetadata(sessionsDir)) {
-      if (id === canonicalOrchestratorId || orchestratorPattern.test(id)) {
-        candidateIds.add(id);
-      }
-    }
-
-    let best: { until: Date; reason: string; sourceSessionId: string } | null = null;
-    for (const sessionId of candidateIds) {
-      const raw = readMetadataRaw(sessionsDir, sessionId);
-      if (!raw) continue;
-      if (!isOrchestratorSessionRecord(sessionId, raw, project.sessionPrefix)) continue;
-
-      const until = parsePauseUntil(raw[GLOBAL_PAUSE_UNTIL_KEY]);
-      if (!until || until.getTime() <= Date.now()) continue;
-
-      if (!best || until.getTime() > best.until.getTime()) {
-        best = {
-          until,
-          reason: raw[GLOBAL_PAUSE_REASON_KEY] ?? "Model rate limit reached",
-          sourceSessionId: raw[GLOBAL_PAUSE_SOURCE_KEY] ?? "unknown",
-        };
-      }
-    }
-
-    return best;
   }
 
   function normalizePath(path: string): string {
@@ -838,7 +763,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     metadata: Record<string, string>,
   ) {
     return resolveAgentSelection({
-      role: resolveSessionRole(sessionId, metadata, project.sessionPrefix),
+      role: resolveSessionRole(
+        sessionId,
+        metadata,
+        project.sessionPrefix,
+        Object.values(config.projects).map((p) => p.sessionPrefix),
+      ),
       project,
       defaults: config.defaults,
       persistedAgent: metadata["agent"],
@@ -900,16 +830,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
   }
 
   /**
-   * Optional per-list()-call cache: `runtimeName -> hasAnySessions()` result.
-   * Lets list() probe the runtime host ONCE for "is the tmux server even
-   * up?" instead of calling `isAlive()` N times when nothing is running.
-   *
-   * `undefined` entry means the plugin didn't implement `hasAnySessions`
-   * and the caller should fall back to per-session `isAlive`.
-   */
-  type RuntimeAvailabilityMap = Map<string, boolean | undefined>;
-
-  /**
    * Ensure session has a runtime handle (fabricate one if missing) and enrich
    * with live runtime state + activity detection. Used by both list() and get().
    */
@@ -921,7 +841,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     effectiveAgentName: string,
     plugins: ReturnType<typeof resolvePlugins>,
     sessionListPromise?: Promise<OpenCodeSessionListEntry[]>,
-    runtimeAvailability?: RuntimeAvailabilityMap,
   ): Promise<void> {
     await ensureOpenCodeSessionMapping(
       session,
@@ -948,12 +867,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         data: {},
       };
     }
-    await enrichSessionWithRuntimeState(
-      session,
-      plugins,
-      handleFromMetadata,
-      runtimeAvailability,
-    );
+    await enrichSessionWithRuntimeState(session, plugins, handleFromMetadata);
   }
 
   /**
@@ -966,36 +880,25 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     session: Session,
     plugins: ReturnType<typeof resolvePlugins>,
     handleFromMetadata: boolean,
-    runtimeAvailability?: RuntimeAvailabilityMap,
   ): Promise<void> {
-    // Skip all subprocess/IO work for sessions already known to be terminal.
-    if (TERMINAL_SESSION_STATUSES.has(session.status)) {
-      session.activity = "exited";
-      return;
-    }
-
-    // Check runtime liveness — but only if the handle came from metadata.
+    // Check runtime liveness first — for all statuses except "spawning".
+    // Skip spawning sessions because tmux may not be fully initialized yet,
+    // and a false-negative from isAlive() would permanently mark the session
+    // as "killed" (see #1035).
+    // This also fixes #1081: terminal statuses (merged, done, etc.) should not
+    // force activity to "exited" if the agent process is still alive.
     // Fabricated handles (constructed as fallback for external sessions) should
     // NOT override status to "killed" — we don't know if the session ever had
     // a tmux session, and we'd clobber meaningful statuses like "pr_open".
-    if (handleFromMetadata && session.runtimeHandle && plugins.runtime) {
-      // Fast path: if the runtime told us at list()-start time that it has
-      // zero sessions (e.g. tmux server was killed out-of-band), cascade-
-      // mark this session killed without the per-session `isAlive` probe.
-      // Saves N subprocess calls on a dead tmux server and gives the UI a
-      // consistent "everything is killed" signal in one poll cycle.
-      const runtimeName = plugins.runtime.name;
-      const runtimeHasAny = runtimeAvailability?.get(runtimeName);
-      if (runtimeHasAny === false) {
-        session.status = "killed";
-        session.activity = "exited";
-        return;
-      }
-
+    if (handleFromMetadata && session.runtimeHandle && plugins.runtime && session.status !== "spawning") {
       try {
         const alive = await plugins.runtime.isAlive(session.runtimeHandle);
         if (!alive) {
-          session.status = "killed";
+          // Process is confirmed dead — set activity to exited.
+          // Only update status to "killed" if not already in a terminal state.
+          if (!TERMINAL_SESSION_STATUSES.has(session.status)) {
+            session.status = "killed";
+          }
           session.activity = "exited";
           return;
         }
@@ -1004,10 +907,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       }
     }
 
-    // Detect activity independently of runtime handle.
+    // Detect activity independently of runtime handle and session status.
     // Activity detection reads JSONL files on disk — it only needs workspacePath,
     // not a runtime handle. Gating on runtimeHandle caused sessions created by
     // external scripts (which don't store runtimeHandle) to always show "unknown".
+    // This now runs for ALL sessions, including terminal statuses, so a merged
+    // session with a live agent shows accurate activity (ready/idle/waiting_input).
     if (plugins.agent) {
       try {
         const detected = await plugins.agent.getActivityState(session, config.readyThresholdMs);
@@ -1038,13 +943,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     const project = config.projects[spawnConfig.projectId];
     if (!project) {
       throw new Error(`Unknown project: ${spawnConfig.projectId}`);
-    }
-
-    const pause = getProjectPause(project);
-    if (pause) {
-      throw new Error(
-        `Project is paused due to model rate limit until ${pause.until.toISOString()} (${pause.reason}; source: ${pause.sourceSessionId})`,
-      );
     }
 
     const selection = resolveAgentSelection({
@@ -1096,7 +994,11 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     if (spawnConfig.branch) {
       branch = spawnConfig.branch;
     } else if (spawnConfig.issueId && plugins.tracker && resolvedIssue) {
-      branch = plugins.tracker.branchName(spawnConfig.issueId, project);
+      const fromIssue = resolvedIssue.branchName;
+      branch =
+        fromIssue && isGitBranchNameSafe(fromIssue)
+          ? fromIssue
+          : plugins.tracker.branchName(spawnConfig.issueId, project);
     } else if (spawnConfig.issueId) {
       // If the issueId is already branch-safe (e.g. "INT-9999"), use as-is.
       // Otherwise sanitize free-text (e.g. "fix login bug") into a valid slug.
@@ -1169,8 +1071,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       issueId: spawnConfig.issueId,
       issueContext,
       userPrompt: spawnConfig.prompt,
-      lineage: spawnConfig.lineage,
-      siblings: spawnConfig.siblings,
     });
 
     // Get agent launch config and create runtime — clean up workspace on failure
@@ -1257,6 +1157,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       lastActivityAt: new Date(),
       metadata: {
         ...(reusedOpenCodeSessionId ? { opencodeSessionId: reusedOpenCodeSessionId } : {}),
+        ...(spawnConfig.prompt ? { userPrompt: spawnConfig.prompt } : {}),
       },
     };
 
@@ -1272,6 +1173,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         createdAt: new Date().toISOString(),
         runtimeHandle: JSON.stringify(handle),
         opencodeSessionId: reusedOpenCodeSessionId,
+        userPrompt: spawnConfig.prompt,
       });
 
       if (plugins.agent.postLaunchSetup) {
@@ -1354,6 +1256,12 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       }
 
       session.metadata["promptDelivered"] = String(promptDelivered);
+    } else if (agentLaunchConfig.prompt) {
+      session.metadata["promptDelivered"] = "true";
+    }
+
+    if (session.metadata["promptDelivered"]) {
+      updateMetadata(sessionsDir, sessionId, session.metadata);
     }
 
     return session;
@@ -1363,13 +1271,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     const project = config.projects[orchestratorConfig.projectId];
     if (!project) {
       throw new Error(`Unknown project: ${orchestratorConfig.projectId}`);
-    }
-
-    const pause = getProjectPause(project);
-    if (pause) {
-      throw new Error(
-        `Project is paused due to model rate limit until ${pause.until.toISOString()} (${pause.reason}; source: ${pause.sourceSessionId})`,
-      );
     }
 
     const selection = resolveAgentSelection({
@@ -1632,34 +1533,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     });
     let openCodeSessionListPromise: Promise<OpenCodeSessionListEntry[]> | undefined;
 
-    // Probe each distinct runtime ONCE for "does it have any sessions at
-    // all?" Populate a per-list()-call availability map so enrichment can
-    // cascade-kill without calling isAlive() N times when the runtime host
-    // (e.g. tmux server) has gone away. Plugins without hasAnySessions()
-    // record `undefined` so the per-session fallback still runs.
-    const runtimeAvailability: RuntimeAvailabilityMap = new Map();
-    const distinctRuntimeNames = new Set<string>();
-    for (const { projectId: sessionProjectId } of allSessions) {
-      const project = config.projects[sessionProjectId];
-      if (!project) continue;
-      distinctRuntimeNames.add(project.runtime ?? config.defaults.runtime);
-    }
-    await Promise.all(
-      Array.from(distinctRuntimeNames).map(async (runtimeName) => {
-        const runtime = registry.get<Runtime>("runtime", runtimeName);
-        if (!runtime?.hasAnySessions) {
-          runtimeAvailability.set(runtimeName, undefined);
-          return;
-        }
-        try {
-          const hasAny = await runtime.hasAnySessions();
-          runtimeAvailability.set(runtimeName, hasAny);
-        } catch {
-          runtimeAvailability.set(runtimeName, undefined);
-        }
-      }),
-    );
-
     const tasks = allSessions.map(async ({ sessionName, projectId: sessionProjectId, raw }) => {
       const project = config.projects[sessionProjectId];
       if (!project) return null;
@@ -1698,7 +1571,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         effectiveAgentName,
         plugins,
         sessionListPromise,
-        runtimeAvailability,
       ).catch(() => {});
       try {
         await Promise.race([enrichPromise, enrichTimeout]);
@@ -1762,33 +1634,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
   async function kill(sessionId: SessionId, options?: { purgeOpenCode?: boolean }): Promise<void> {
     const { raw, sessionsDir, project, projectId } = requireSessionRecord(sessionId);
-
-    // Kill sub-sessions first (terminal tabs)
-    if (!raw["parent"]) {
-      const subIds = listSubSessionIds(sessionsDir, sessionId);
-      for (const subId of subIds) {
-        const subRaw = readMetadataRaw(sessionsDir, subId);
-        if (!subRaw) continue;
-        if (subRaw["runtimeHandle"]) {
-          const subHandle = safeJsonParse<RuntimeHandle>(subRaw["runtimeHandle"]);
-          if (subHandle) {
-            const rt = registry.get<Runtime>(
-              "runtime",
-              subHandle.runtimeName ??
-                (project ? (project.runtime ?? config.defaults.runtime) : config.defaults.runtime),
-            );
-            if (rt) {
-              try {
-                await rt.destroy(subHandle);
-              } catch {
-                void 0;
-              }
-            }
-          }
-        }
-        deleteMetadata(sessionsDir, subId, true);
-      }
-    }
 
     const cleanupAgent = resolveSelectionForSession(project, sessionId, raw).agentName;
 
@@ -2015,12 +1860,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
   async function send(sessionId: SessionId, message: string): Promise<void> {
     const { raw, sessionsDir, project } = requireSessionRecord(sessionId);
-    const pause = getProjectPause(project);
-    if (pause && !isOrchestratorSessionRecord(sessionId, raw, project.sessionPrefix)) {
-      throw new Error(
-        `Project is paused due to model rate limit until ${pause.until.toISOString()} (${pause.reason}; source: ${pause.sourceSessionId})`,
-      );
-    }
 
     const selection = resolveSelectionForSession(project, sessionId, raw);
     const selectedAgent = selection.agentName;
@@ -2077,8 +1916,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         return undefined;
       }
 
-      // Bypass cache — delivery confirmation needs fresh timestamps to detect changes
-      const sessions = await fetchOpenCodeSessionListUncached(OPENCODE_DISCOVERY_TIMEOUT_MS);
+      const sessions = await fetchOpenCodeSessionList(OPENCODE_DISCOVERY_TIMEOUT_MS);
       return sessions.find((entry) => entry.id === mappedSessionId)?.updatedAt;
     };
 
@@ -2425,7 +2263,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     return discovered;
   }
 
-  async function restore(sessionId: SessionId, options?: RestoreOptions): Promise<Session> {
+  async function restore(sessionId: SessionId): Promise<Session> {
     // 1. Find session metadata across all projects (active first, then archive)
     let raw: Record<string, string> | null = null;
     let sessionsDir: string | null = null;
@@ -2459,21 +2297,6 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
 
     if (!raw || !sessionsDir || !project || !projectId) {
       throw new SessionNotFoundError(sessionId);
-    }
-
-    if (raw["parent"]) {
-      throw new SessionNotRestorableError(
-        sessionId,
-        "terminal sub-sessions are restored via restoreTerminalSubSession or the dashboard",
-      );
-    }
-
-    if (options?.agent !== undefined && options.agent.trim() !== "") {
-      const agentOverride = options.agent.trim();
-      if (!registry.get<Agent>("agent", agentOverride)) {
-        throw new Error(`Agent plugin '${agentOverride}' not found`);
-      }
-      raw = { ...raw, agent: agentOverride };
     }
 
     const selection = resolveSelectionForSession(project, sessionId, raw);
@@ -2525,6 +2348,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
         createdAt: raw["createdAt"],
         runtimeHandle: raw["runtimeHandle"],
         opencodeSessionId: raw["opencodeSessionId"],
+        pinnedSummary: raw["pinnedSummary"],
       });
     }
 
@@ -2671,272 +2495,5 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     return restoredSession;
   }
 
-  function isTerminalSubSessionId(parentId: SessionId, subId: string): boolean {
-    const prefix = `${parentId}-t`;
-    if (!subId.startsWith(prefix)) return false;
-    const suffix = subId.slice(prefix.length);
-    return /^\d+$/.test(suffix);
-  }
-
-  async function createSubSession(sessionId: SessionId): Promise<SubSession> {
-    const { raw, sessionsDir, project, projectId } = requireSessionRecord(sessionId);
-    if (raw["parent"]) {
-      throw new Error(`Cannot create sub-session of a sub-session (${sessionId})`);
-    }
-    const existing = listSubSessionIds(sessionsDir, sessionId);
-    if (existing.length >= MAX_TERMINAL_SUB_SESSIONS) {
-      throw new Error(`Maximum ${MAX_TERMINAL_SUB_SESSIONS} terminal sub-sessions per session`);
-    }
-    let nextNum = 1;
-    for (const id of existing) {
-      const m = id.match(/-t(\d+)$/);
-      if (m) {
-        const n = Number.parseInt(m[1], 10);
-        if (n >= nextNum) nextNum = n + 1;
-      }
-    }
-    const subSessionId = `${sessionId}-t${nextNum}`;
-    const parentTmuxName = raw["tmuxName"]?.trim() || sessionId;
-    const subTmuxName = `${parentTmuxName}-t${nextNum}`;
-    const workspacePath = raw["worktree"] || project.path;
-    const plugins = resolvePlugins(project);
-    if (!plugins.runtime) {
-      throw new Error(`Runtime plugin '${project.runtime ?? config.defaults.runtime}' not found`);
-    }
-
-    const handle = await plugins.runtime.create({
-      sessionId: subTmuxName,
-      workspacePath,
-      launchCommand: "",
-      environment: {
-        AO_SESSION: sessionId,
-        AO_SUB_SESSION: subSessionId,
-        AO_DATA_DIR: sessionsDir,
-        AO_CALLER_TYPE: "terminal",
-        AO_PROJECT_ID: projectId,
-        AO_CONFIG_PATH: config.configPath,
-        ...(config.port !== undefined && config.port !== null && { AO_PORT: String(config.port) }),
-      },
-    });
-
-    writeMetadata(sessionsDir, subSessionId, {
-      worktree: workspacePath,
-      branch: raw["branch"] ?? "",
-      status: "working",
-      tmuxName: subTmuxName,
-      project: raw["project"] ?? projectId,
-      createdAt: new Date().toISOString(),
-      runtimeHandle: JSON.stringify(handle),
-    });
-    updateMetadata(sessionsDir, subSessionId, {
-      parent: sessionId,
-      type: "terminal",
-    });
-
-    return {
-      id: subSessionId,
-      parentId: sessionId,
-      type: "terminal",
-      tmuxName: subTmuxName,
-      workspacePath,
-      runtimeHandle: handle,
-      alive: true,
-    };
-  }
-
-  async function listSubSessions(sessionId: SessionId): Promise<SubSession[]> {
-    const { raw, sessionsDir, project } = requireSessionRecord(sessionId);
-    if (raw["parent"]) {
-      throw new Error(`Not a top-level session: ${sessionId}`);
-    }
-    const plugins = resolvePlugins(project);
-    const runtime = plugins.runtime;
-    const workspacePath = raw["worktree"] || project.path;
-    const parentTmux = raw["tmuxName"]?.trim() || sessionId;
-
-    const aliveFor = async (
-      handleJson?: string,
-    ): Promise<{ handle: RuntimeHandle | null; alive: boolean }> => {
-      if (!handleJson || !runtime) return { handle: null, alive: false };
-      const handle = safeJsonParse<RuntimeHandle>(handleJson);
-      if (!handle) return { handle: null, alive: false };
-      try {
-        const ok = await runtime.isAlive(handle);
-        return { handle, alive: ok };
-      } catch {
-        return { handle, alive: false };
-      }
-    };
-
-    const primary = await aliveFor(raw["runtimeHandle"]);
-    const out: SubSession[] = [
-      {
-        id: sessionId,
-        parentId: sessionId,
-        type: "primary",
-        tmuxName: parentTmux,
-        workspacePath,
-        runtimeHandle: primary.handle,
-        alive: primary.alive,
-      },
-    ];
-
-    const subIds = [...listSubSessionIds(sessionsDir, sessionId)].sort((a, b) => {
-      const na = Number.parseInt(a.match(/-t(\d+)$/)?.[1] ?? "0", 10);
-      const nb = Number.parseInt(b.match(/-t(\d+)$/)?.[1] ?? "0", 10);
-      return na - nb;
-    });
-
-    for (const sid of subIds) {
-      const sr = readMetadataRaw(sessionsDir, sid);
-      if (!sr) continue;
-      const st = await aliveFor(sr["runtimeHandle"]);
-      const tm = sr["tmuxName"]?.trim() || sid;
-      out.push({
-        id: sid,
-        parentId: sessionId,
-        type: "terminal",
-        tmuxName: tm,
-        workspacePath: sr["worktree"] || workspacePath,
-        runtimeHandle: st.handle,
-        alive: st.alive,
-      });
-    }
-    return out;
-  }
-
-  async function killSubSession(sessionId: SessionId, subSessionId: string): Promise<void> {
-    if (subSessionId === sessionId) {
-      throw new Error(
-        "Cannot kill the primary sub-session with killSubSession; use session kill for the AO session",
-      );
-    }
-    if (!isTerminalSubSessionId(sessionId, subSessionId)) {
-      throw new Error(`Invalid sub-session id: ${subSessionId}`);
-    }
-    const { sessionsDir, project } = requireSessionRecord(sessionId);
-    const subRaw = readMetadataRaw(sessionsDir, subSessionId);
-    if (!subRaw || subRaw["parent"] !== sessionId) {
-      throw new SessionNotFoundError(subSessionId);
-    }
-    const plugins = resolvePlugins(project);
-    if (subRaw["runtimeHandle"]) {
-      const h = safeJsonParse<RuntimeHandle>(subRaw["runtimeHandle"]);
-      if (h && plugins.runtime) {
-        try {
-          await plugins.runtime.destroy(h);
-        } catch {
-          void 0;
-        }
-      }
-    }
-    deleteMetadata(sessionsDir, subSessionId, true);
-  }
-
-  async function restoreTerminalSubSession(
-    parentSessionId: SessionId,
-    subSessionId: SessionId,
-  ): Promise<SubSession> {
-    const parent = requireSessionRecord(parentSessionId);
-    if (parent.raw["parent"]) {
-      throw new Error(`Not a top-level session: ${parentSessionId}`);
-    }
-    const { sessionsDir, project, projectId } = parent;
-    const subRaw = readMetadataRaw(sessionsDir, subSessionId);
-    if (
-      !subRaw ||
-      subRaw["parent"] !== parentSessionId ||
-      subRaw["type"] !== "terminal"
-    ) {
-      throw new SessionNotFoundError(subSessionId);
-    }
-    const plugins = resolvePlugins(project);
-    if (!plugins.runtime) {
-      throw new Error(`Runtime plugin '${project.runtime ?? config.defaults.runtime}' not found`);
-    }
-
-    const workspacePath = subRaw["worktree"] || parent.raw["worktree"] || project.path;
-    const subTmuxName = subRaw["tmuxName"]?.trim();
-    if (!subTmuxName) {
-      throw new Error(`Missing tmuxName for ${subSessionId}`);
-    }
-
-    let oldHandle: RuntimeHandle | null = null;
-    if (subRaw["runtimeHandle"]) {
-      oldHandle = safeJsonParse<RuntimeHandle>(subRaw["runtimeHandle"]);
-    }
-
-    if (oldHandle && plugins.runtime.isAlive) {
-      try {
-        if (await plugins.runtime.isAlive(oldHandle)) {
-          return {
-            id: subSessionId,
-            parentId: parentSessionId,
-            type: "terminal",
-            tmuxName: subTmuxName,
-            workspacePath,
-            runtimeHandle: oldHandle,
-            alive: true,
-          };
-        }
-      } catch {
-        void 0;
-      }
-    }
-
-    if (oldHandle) {
-      try {
-        await plugins.runtime.destroy(oldHandle);
-      } catch {
-        void 0;
-      }
-    }
-
-    const handle = await plugins.runtime.create({
-      sessionId: subTmuxName,
-      workspacePath,
-      launchCommand: "",
-      environment: {
-        AO_SESSION: parentSessionId,
-        AO_SUB_SESSION: subSessionId,
-        AO_DATA_DIR: sessionsDir,
-        AO_CALLER_TYPE: "terminal",
-        AO_PROJECT_ID: projectId,
-        AO_CONFIG_PATH: config.configPath,
-        ...(config.port !== undefined && config.port !== null && { AO_PORT: String(config.port) }),
-      },
-    });
-
-    updateMetadata(sessionsDir, subSessionId, {
-      status: "working",
-      runtimeHandle: JSON.stringify(handle),
-    });
-
-    return {
-      id: subSessionId,
-      parentId: parentSessionId,
-      type: "terminal",
-      tmuxName: subTmuxName,
-      workspacePath,
-      runtimeHandle: handle,
-      alive: true,
-    };
-  }
-
-  return {
-    spawn,
-    spawnOrchestrator,
-    restore,
-    createSubSession,
-    listSubSessions,
-    killSubSession,
-    restoreTerminalSubSession,
-    list,
-    get,
-    kill,
-    cleanup,
-    send,
-    claimPR,
-    remap,
-  };
+  return { spawn, spawnOrchestrator, restore, list, get, kill, cleanup, send, claimPR, remap };
 }

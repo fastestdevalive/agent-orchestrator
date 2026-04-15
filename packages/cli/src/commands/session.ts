@@ -1,12 +1,30 @@
 import { spawn } from "node:child_process";
 import chalk from "chalk";
 import type { Command } from "commander";
-import { loadConfig, SessionNotRestorableError, WorkspaceMissingError, updateMetadata, getSessionsDir } from "@composio/ao-core";
+import {
+  isOrchestratorSession,
+  loadConfig,
+  SessionNotRestorableError,
+  WorkspaceMissingError,
+} from "@aoagents/ao-core";
 import { DEFAULT_PORT } from "../lib/constants.js";
 import { git, getTmuxActivity, tmux } from "../lib/shell.js";
 import { formatAge } from "../lib/format.js";
 import { getSessionManager } from "../lib/create-session-manager.js";
 import { isOrchestratorSessionName } from "../lib/session-utils.js";
+
+interface SessionListEntry {
+  id: string;
+  projectId: string;
+  projectName: string;
+  role: "worker" | "orchestrator";
+  branch: string | null;
+  status: string | null;
+  issueId: string | null;
+  pr: string | null;
+  workspacePath: string | null;
+  lastActivityAt: string | null;
+}
 
 export function registerSession(program: Command): void {
   const session = program
@@ -17,7 +35,9 @@ export function registerSession(program: Command): void {
     .command("ls")
     .description("List all sessions")
     .option("-p, --project <id>", "Filter by project ID")
-    .action(async (opts: { project?: string }) => {
+    .option("-a, --all", "Include orchestrator sessions")
+    .option("--json", "Output as JSON")
+    .action(async (opts: { project?: string; all?: boolean; json?: boolean }) => {
       const config = loadConfig();
       if (opts.project && !config.projects[opts.project]) {
         console.error(chalk.red(`Unknown project: ${opts.project}`));
@@ -25,7 +45,14 @@ export function registerSession(program: Command): void {
       }
 
       const sm = await getSessionManager(config);
-      const sessions = await sm.list(opts.project);
+      const allSessions = await sm.list(opts.project);
+
+      // Filter out orchestrator sessions unless --all is passed
+      const sessions = opts.all
+        ? allSessions
+        : allSessions.filter(
+            (s) => !isOrchestratorSessionName(config, s.id, s.projectId),
+          );
 
       // Group sessions by project
       const byProject = new Map<string, typeof sessions>();
@@ -37,18 +64,26 @@ export function registerSession(program: Command): void {
 
       // Iterate over all configured projects (not just ones with sessions)
       const projectIds = opts.project ? [opts.project] : Object.keys(config.projects);
+      const allSessionPrefixes = Object.entries(config.projects).map(
+        ([id, project]) => project.sessionPrefix ?? id,
+      );
+      const jsonOutput: SessionListEntry[] = [];
 
       for (const projectId of projectIds) {
         const project = config.projects[projectId];
         if (!project) continue;
-        console.log(chalk.bold(`\n${project.name || projectId}:`));
+        if (!opts.json) {
+          console.log(chalk.bold(`\n${project.name || projectId}:`));
+        }
 
         const projectSessions = (byProject.get(projectId) ?? []).sort((a, b) =>
           a.id.localeCompare(b.id),
         );
 
         if (projectSessions.length === 0) {
-          console.log(chalk.dim("  (no active sessions)"));
+          if (!opts.json) {
+            console.log(chalk.dim("  (no active sessions)"));
+          }
           continue;
         }
 
@@ -76,17 +111,48 @@ export function registerSession(program: Command): void {
 
           // Priority: live branch from workspace > metadata branch > empty string
           const branchStr = (s.workspacePath && liveBranch) ? liveBranch : (s.branch || "");
-          const age = activityTs ? formatAge(activityTs) : "-";
+          const prUrl = s.metadata["pr"] ?? null;
 
+          if (opts.json) {
+            const role = isOrchestratorSession(
+              s,
+              project.sessionPrefix ?? projectId,
+              allSessionPrefixes,
+            )
+              ? "orchestrator"
+              : "worker";
+
+            jsonOutput.push({
+              id: s.id,
+              projectId,
+              projectName: project.name || projectId,
+              role,
+              branch: branchStr || null,
+              status: s.status,
+              issueId: s.issueId,
+              pr: prUrl,
+              workspacePath: s.workspacePath,
+              lastActivityAt: activityTs ? new Date(activityTs).toISOString() : null,
+            });
+
+            continue;
+          }
+
+          const age = activityTs ? formatAge(activityTs) : "-";
           const parts = [chalk.green(s.id), chalk.dim(`(${age})`)];
           if (branchStr) parts.push(chalk.cyan(branchStr));
           if (s.status) parts.push(chalk.dim(`[${s.status}]`));
-          const prUrl = s.metadata["pr"];
           if (prUrl) parts.push(chalk.blue(prUrl));
 
           console.log(`  ${parts.join("  ")}`);
         }
       }
+
+      if (opts.json) {
+        console.log(JSON.stringify(jsonOutput, null, 2));
+        return;
+      }
+
       console.log();
     });
 
@@ -289,15 +355,12 @@ export function registerSession(program: Command): void {
     .command("restore")
     .description("Restore a terminated/crashed session in-place")
     .argument("<session>", "Session name to restore")
-    .option("--agent <name>", "Override agent plugin for this restore (persisted)")
-    .action(async (sessionName: string, opts: { agent?: string }) => {
+    .action(async (sessionName: string) => {
       const config = loadConfig();
       const sm = await getSessionManager(config);
 
       try {
-        const restored = await sm.restore(sessionName, {
-          agent: opts.agent?.trim() || undefined,
-        });
+        const restored = await sm.restore(sessionName);
         console.log(chalk.green(`\nSession ${sessionName} restored.`));
         if (restored.workspacePath) {
           console.log(chalk.dim(`  Worktree: ${restored.workspacePath}`));
@@ -336,47 +399,5 @@ export function registerSession(program: Command): void {
         console.error(chalk.red(`Failed to remap session ${sessionName}: ${err}`));
         process.exit(1);
       }
-    });
-
-  session
-    .command("open-plan")
-    .description("Pre-select a plan file in the web preview for the next session visit")
-    .argument("<file-path>", "Relative path to the plan file (e.g. .feature-plans/pending/foo.md)")
-    .argument("[session]", "Session name (defaults to AO_SESSION_NAME or AO_SESSION env var)")
-    .action(async (filePath: string, sessionName: string | undefined) => {
-      const config = loadConfig();
-      const resolvedSession =
-        sessionName ?? process.env["AO_SESSION_NAME"] ?? process.env["AO_SESSION"];
-
-      if (!resolvedSession) {
-        console.error(
-          chalk.red(
-            "No session provided. Pass a session name or run this inside a managed AO session.",
-          ),
-        );
-        process.exit(1);
-      }
-
-      const sm = await getSessionManager(config);
-      const session = await sm.get(resolvedSession);
-      if (!session) {
-        console.error(chalk.red(`Session '${resolvedSession}' not found.`));
-        process.exit(1);
-      }
-
-      const project = config.projects[session.projectId];
-      if (!project) {
-        console.error(chalk.red(`Project '${session.projectId}' not found in config.`));
-        process.exit(1);
-      }
-
-      const sessionsDir = getSessionsDir(config.configPath, project.path);
-      updateMetadata(sessionsDir, resolvedSession, { pendingPreviewFile: filePath });
-      console.log(
-        chalk.green(`\nSession ${resolvedSession}: plan preview set to ${filePath}`),
-      );
-      console.log(
-        chalk.dim(`  The plan will open in the file preview on your next visit to this session.`),
-      );
     });
 }

@@ -13,7 +13,7 @@ import {
   type RuntimeMetrics,
   type AttachInfo,
   shellEscape,
-} from "@composio/ao-core";
+} from "@aoagents/ao-core";
 
 const execFileAsync = promisify(execFile);
 const TMUX_COMMAND_TIMEOUT_MS = 5_000;
@@ -65,18 +65,6 @@ export function create(): Runtime {
 
       // Create tmux session in detached mode
       await tmux("new-session", "-d", "-s", sessionName, "-c", config.workspacePath, ...envArgs);
-
-      // Plain shell sessions (empty command) — tmux already starts the default shell.
-      if (!config.launchCommand || config.launchCommand.trim() === "") {
-        return {
-          id: sessionName,
-          runtimeName: "tmux",
-          data: {
-            createdAt: Date.now(),
-            workspacePath: config.workspacePath,
-          },
-        };
-      }
 
       // Send the launch command — clean up the session if this fails.
       // Use a temp script for long commands so the pane shows a short
@@ -168,31 +156,9 @@ export function create(): Runtime {
     },
 
     async isAlive(handle: RuntimeHandle): Promise<boolean> {
-      // Retry once after a short delay to handle transient tmux server hiccups
-      // (e.g., system sleep/resume, momentary tmux server restart).
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try {
-          await tmux("has-session", "-t", handle.id);
-          return true;
-        } catch {
-          if (attempt === 0) {
-            await sleep(500);
-          }
-        }
-      }
-      return false;
-    },
-
-    async hasAnySessions(): Promise<boolean> {
-      // `tmux list-sessions` exits 1 with "no server running" when the
-      // tmux server is down, and exits 0 with an empty stdout when the
-      // server is up but has zero sessions. We treat both as "false".
-      //
-      // This is called by session-manager.list() as a fast-path to detect
-      // whole-server death (e.g. PC crash) and avoid N per-session probes.
       try {
-        const out = await tmux("list-sessions", "-F", "#{session_name}");
-        return out.trim().length > 0;
+        await tmux("has-session", "-t", handle.id);
+        return true;
       } catch {
         return false;
       }

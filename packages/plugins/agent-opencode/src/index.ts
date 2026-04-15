@@ -21,7 +21,7 @@ import {
   type Session,
   type WorkspaceHooksConfig,
   type OpenCodeAgentConfig,
-} from "@composio/ao-core";
+} from "@aoagents/ao-core";
 import { execFile, execFileSync } from "node:child_process";
 import { promisify } from "node:util";
 
@@ -91,8 +91,7 @@ process.stdin.on('data', chunk => {
       const obj = JSON.parse(trimmed);
       const sid = (typeof obj.session_id === 'string' && obj.session_id) || (typeof obj.sessionID === 'string' && obj.sessionID);
       if (sid && /^ses_[A-Za-z0-9_-]+$/.test(sid)) {
-        process.stdout.write(sid);
-        process.exit(0);
+        captured = sid;
       }
     } catch {}
   }
@@ -102,8 +101,7 @@ process.stdin.on('data', chunk => {
       const obj = JSON.parse(buffer.trim());
       const sid = (typeof obj.session_id === 'string' && obj.session_id) || (typeof obj.sessionID === 'string' && obj.sessionID);
       if (sid && /^ses_[A-Za-z0-9_-]+$/.test(sid)) {
-        process.stdout.write(sid);
-        process.exit(0);
+        captured = sid;
       }
     } catch {}
   }

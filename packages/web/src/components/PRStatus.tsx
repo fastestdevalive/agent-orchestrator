@@ -72,6 +72,7 @@ export function PRStatus({ pr }: PRStatusProps) {
 
 interface PRTableRowProps {
   pr: DashboardPR;
+  muted?: boolean;
 }
 
 export function PRTableRow({ pr }: PRTableRowProps) {

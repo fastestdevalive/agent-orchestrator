@@ -1,5 +1,5 @@
 /**
- * @composio/ao-core
+ * @aoagents/ao-core
  *
  * Core library for the Agent Orchestrator.
  * Exports all types, config loader, and service implementations.
@@ -36,7 +36,6 @@ export {
   updateMetadata,
   deleteMetadata,
   listMetadata,
-  listSubSessionIds,
 } from "./metadata.js";
 
 // tmux — command wrappers
@@ -52,7 +51,7 @@ export {
 } from "./tmux.js";
 
 // Session manager — session CRUD
-export { createSessionManager, _resetOpenCodeSessionListCache } from "./session-manager.js";
+export { createSessionManager } from "./session-manager.js";
 export type { SessionManagerDeps } from "./session-manager.js";
 
 // Lifecycle manager — state machine + reaction engine
@@ -63,25 +62,6 @@ export type { LifecycleManagerDeps } from "./lifecycle-manager.js";
 export { buildPrompt, BASE_AGENT_PROMPT } from "./prompt-builder.js";
 export type { PromptBuildConfig } from "./prompt-builder.js";
 
-// Decomposer — LLM-driven task decomposition
-export {
-  decompose,
-  getLeaves,
-  getSiblings,
-  formatPlanTree,
-  formatLineage,
-  formatSiblings,
-  propagateStatus,
-  DEFAULT_DECOMPOSER_CONFIG,
-} from "./decomposer.js";
-export type {
-  TaskNode,
-  TaskKind,
-  TaskStatus,
-  DecompositionPlan,
-  DecomposerConfig,
-} from "./decomposer.js";
-
 // Orchestrator prompt — generates orchestrator context for `ao start`
 export { generateOrchestratorPrompt } from "./orchestrator-prompt.js";
 export type { OrchestratorPromptConfig } from "./orchestrator-prompt.js";
@@ -91,6 +71,7 @@ export {
   shellEscape,
   escapeAppleScript,
   validateUrl,
+  isGitBranchNameSafe,
   isRetryableHttpStatus,
   normalizeRetryConfig,
   readLastJsonlEntry,
@@ -128,6 +109,7 @@ export {
   createProjectObserver,
   readObservabilitySummary,
 } from "./observability.js";
+export { resolveNotifierTarget } from "./notifier-resolution.js";
 export type {
   ObservabilityMetricName,
   ObservabilityHealthStatus,
@@ -195,10 +177,3 @@ export type {
   GenerateConfigOptions,
 } from "./config-generator.js";
 
-// Global pause constants
-export {
-  GLOBAL_PAUSE_UNTIL_KEY,
-  GLOBAL_PAUSE_REASON_KEY,
-  GLOBAL_PAUSE_SOURCE_KEY,
-  parsePauseUntil,
-} from "./global-pause.js";

@@ -57,16 +57,17 @@ describe("getDashboardPageData fast path", () => {
     hoisted.getProjectNameMock.mockReturnValue("Docs");
     hoisted.resolveGlobalPauseMock.mockReturnValue({ reason: "paused" });
     hoisted.listDashboardOrchestratorsMock.mockReturnValue([{ id: "orch-1", projectId: "docs", projectName: "Docs" }]);
+    hoisted.enrichSessionsMetadataFastMock.mockResolvedValue(undefined);
   });
 
-  it("runs fast enrichment, uses cache-only PR hydration, and infers merged state for terminal cache misses", async () => {
+  it("runs fast enrichment, uses cache-only PR hydration, and infers merged/closed state for terminal cache misses even without SCM", async () => {
     const noPrCore = { id: "session-no-pr", status: "working", pr: null };
-    const noScmCore = { id: "session-no-scm", status: "working", pr: { number: 2 } };
+    const closedCore = { id: "session-closed", status: "killed", pr: { number: 2 } };
     const mergedCore = { id: "session-merged", status: "merged", pr: { number: 3 } };
-    const allSessions = [noPrCore, noScmCore, mergedCore];
+    const allSessions = [noPrCore, closedCore, mergedCore];
 
     const dashboardNoPr = { id: "session-no-pr", pr: null };
-    const dashboardNoScm = { id: "session-no-scm", pr: { state: "open", enriched: false } };
+    const dashboardClosed = { id: "session-closed", pr: { state: "open", enriched: false } };
     const dashboardMerged = { id: "session-merged", pr: { state: "open", enriched: false } };
 
     hoisted.getServicesMock.mockResolvedValue({
@@ -78,7 +79,7 @@ describe("getDashboardPageData fast path", () => {
     hoisted.filterWorkerSessionsMock.mockReturnValue(allSessions);
     hoisted.sessionToDashboardMock
       .mockReturnValueOnce(dashboardNoPr)
-      .mockReturnValueOnce(dashboardNoScm)
+      .mockReturnValueOnce(dashboardClosed)
       .mockReturnValueOnce(dashboardMerged);
     hoisted.resolveProjectMock.mockImplementation((core) => ({ id: core.id }));
     hoisted.getSCMMock
@@ -89,7 +90,7 @@ describe("getDashboardPageData fast path", () => {
 
     expect(hoisted.enrichSessionsMetadataFastMock).toHaveBeenCalledWith(
       allSessions,
-      [dashboardNoPr, dashboardNoScm, dashboardMerged],
+      [dashboardNoPr, dashboardClosed, dashboardMerged],
       { projects: { docs: { id: "docs" } } },
       { scm: "registry" },
     );
@@ -100,7 +101,38 @@ describe("getDashboardPageData fast path", () => {
       mergedCore.pr,
       { cacheOnly: true },
     );
+    expect(dashboardClosed.pr.state).toBe("closed");
     expect(dashboardMerged.pr.state).toBe("merged");
-    expect(pageData.sessions).toEqual([dashboardNoPr, dashboardNoScm, dashboardMerged]);
+    expect(pageData.sessions).toEqual([dashboardNoPr, dashboardClosed, dashboardMerged]);
+  });
+
+  it("does not block SSR indefinitely when fast metadata enrichment hangs", async () => {
+    vi.useFakeTimers();
+
+    try {
+      const core = { id: "session-hung", status: "working", pr: null };
+      const dashboard = { id: "session-hung", pr: null };
+
+      hoisted.getServicesMock.mockResolvedValue({
+        config: { projects: { mono: { id: "mono" } } },
+        registry: { scm: "registry" },
+        sessionManager: { list: vi.fn().mockResolvedValue([core]) },
+      });
+      hoisted.filterProjectSessionsMock.mockReturnValue([core]);
+      hoisted.filterWorkerSessionsMock.mockReturnValue([core]);
+      hoisted.sessionToDashboardMock.mockReturnValue(dashboard);
+      hoisted.enrichSessionsMetadataFastMock.mockImplementation(
+        () => new Promise(() => {}),
+      );
+
+      const pageDataPromise = getDashboardPageData("mono");
+      await vi.advanceTimersByTimeAsync(3_000);
+      const pageData = await pageDataPromise;
+
+      expect(pageData.sessions).toEqual([dashboard]);
+      expect(hoisted.enrichSessionPRMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

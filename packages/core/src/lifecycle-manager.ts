@@ -39,6 +39,7 @@ import {
 import { updateMetadata } from "./metadata.js";
 import { getSessionsDir } from "./paths.js";
 import { createCorrelationId, createProjectObserver } from "./observability.js";
+import { resolveNotifierTarget } from "./notifier-resolution.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
 
 /** Parse a duration string like "10m", "30s", "1h" to milliseconds. */
@@ -370,9 +371,15 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
 
     // Track activity state across steps so stuck detection can run after PR checks
     let detectedIdleTimestamp: Date | null = null;
+    // Never probe runtime/agent liveness while a session is still spawning —
+    // tmux may not be initialized and the agent process hasn't started yet.
+    // A persisted runtimeHandle alone is insufficient to gate on because spawn
+    // writes it to metadata before leaving "spawning" status (#1035).
+    const canProbeRuntimeIdentity =
+      session.status !== SESSION_STATUS.SPAWNING;
 
     // 1. Check if runtime is alive
-    if (session.runtimeHandle) {
+    if (session.runtimeHandle && canProbeRuntimeIdentity) {
       const runtime = registry.get<Runtime>("runtime", project.runtime ?? config.defaults.runtime);
       if (runtime) {
         const alive = await runtime.isAlive(session.runtimeHandle).catch(() => true);
@@ -380,12 +387,17 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
       }
     }
 
-    // 2. Check agent activity — prefer JSONL-based detection (runtime-agnostic)
-    if (agent && session.runtimeHandle) {
+    // 2. Check agent activity.
+    // JSONL-based activity detection is runtime-agnostic, but terminal probing
+    // and process checks should only run once a real runtime identity has been
+    // persisted. During spawn, sessionManager may fabricate a temporary handle
+    // to keep the object shape stable; treating that as a real tmux target can
+    // falsely mark a just-reserved session as killed before launch completes.
+    if (agent && (session.runtimeHandle || session.workspacePath)) {
       try {
         // If the agent implements recordActivity, capture terminal output and record
         // BEFORE calling getActivityState so the JSONL has fresh data to read.
-        if (agent.recordActivity && session.workspacePath) {
+        if (agent.recordActivity && session.workspacePath && session.runtimeHandle && canProbeRuntimeIdentity) {
           try {
             const runtime = registry.get<Runtime>(
               "runtime",
@@ -406,7 +418,7 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
         const activityState = await agent.getActivityState(session, config.readyThresholdMs);
         if (activityState) {
           if (activityState.state === "waiting_input") return "needs_input";
-          if (activityState.state === "exited") return "killed";
+          if (activityState.state === "exited" && canProbeRuntimeIdentity) return "killed";
 
           if (
             (activityState.state === "idle" || activityState.state === "blocked") &&
@@ -419,17 +431,19 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
           // proceed to PR checks below
         } else {
           // getActivityState returned null — fall back to terminal output parsing
-          const runtime = registry.get<Runtime>(
-            "runtime",
-            project.runtime ?? config.defaults.runtime,
-          );
-          const terminalOutput = runtime ? await runtime.getOutput(session.runtimeHandle, 10) : "";
-          if (terminalOutput) {
-            const activity = agent.detectActivity(terminalOutput);
-            if (activity === "waiting_input") return "needs_input";
+          if (session.runtimeHandle && canProbeRuntimeIdentity) {
+            const runtime = registry.get<Runtime>(
+              "runtime",
+              project.runtime ?? config.defaults.runtime,
+            );
+            const terminalOutput = runtime ? await runtime.getOutput(session.runtimeHandle, 10) : "";
+            if (terminalOutput) {
+              const activity = agent.detectActivity(terminalOutput);
+              if (activity === "waiting_input") return "needs_input";
 
-            const processAlive = await agent.isProcessRunning(session.runtimeHandle);
-            if (!processAlive) return "killed";
+              const processAlive = await agent.isProcessRunning(session.runtimeHandle);
+              if (!processAlive) return "killed";
+            }
           }
         }
       } catch {
@@ -1174,7 +1188,10 @@ export function createLifecycleManager(deps: LifecycleManagerDeps): LifecycleMan
     const notifierNames = config.notificationRouting[priority] ?? config.defaults.notifiers;
 
     for (const name of notifierNames) {
-      const notifier = registry.get<Notifier>("notifier", name);
+      const target = resolveNotifierTarget(config, name);
+      const notifier =
+        registry.get<Notifier>("notifier", target.reference) ??
+        registry.get<Notifier>("notifier", target.pluginName);
       if (notifier) {
         try {
           await notifier.notify(eventWithPriority);

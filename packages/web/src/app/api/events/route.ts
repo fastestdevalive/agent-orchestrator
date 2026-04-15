@@ -8,7 +8,7 @@ import {
   createCorrelationId,
   createProjectObserver,
   type ProjectObserver,
-} from "@composio/ao-core";
+} from "@aoagents/ao-core";
 
 export const dynamic = "force-dynamic";
 

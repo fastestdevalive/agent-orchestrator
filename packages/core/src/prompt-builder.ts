@@ -1,12 +1,10 @@
 /**
  * Prompt Builder — composes layered prompts for agent sessions.
  *
- * Layers (in order):
- *   1. BASE_AGENT_PROMPT — session lifecycle, planning workflow, feature plans, git, PRs
- *   2. Session focus — optional explicit userPrompt from spawn config
- *   3. Config-derived context — project name, repo, default branch, tracker, reactions, task/issue
- *   4. User rules — inline agentRules and/or agentRulesFile content
- *   5. Decomposition context — lineage and siblings when present
+ * Three layers:
+ *   1. BASE_AGENT_PROMPT — constant instructions about session lifecycle, git workflow, PR handling
+ *   2. Config-derived context — project name, repo, default branch, tracker info, reaction rules
+ *   3. User rules — inline agentRules and/or agentRulesFile content
  *
  * buildPrompt() always returns the AO base guidance and project context so
  * bare launches still know about AO-specific commands such as PR claiming.
@@ -24,40 +22,15 @@ export const BASE_AGENT_PROMPT = `You are an AI coding agent managed by the Agen
 
 ## Session Lifecycle
 - You are running inside a managed session. Focus on the assigned task.
-- **Your default mode is PLANNING, not coding.** Analyze the problem, research the codebase, and produce a written plan before making any code changes.
-- Only implement code when the user explicitly requests it (e.g., "implement this", "start coding", "execute the plan").
-- **If no task or issue is specified**, wait for instructions. Do not proactively research the codebase or generate plans — this avoids unnecessary context bloat.
+- When you finish your work, create a PR and push it. The orchestrator will handle CI monitoring and review routing.
 - If you're told to take over or continue work on an existing PR, run \`ao session claim-pr <pr-number-or-url>\` from inside this session before making changes.
 - If CI fails, the orchestrator will send you the failures — fix them and push again.
 - If reviewers request changes, the orchestrator will forward their comments — address each one, push fixes, and reply to the comments.
 
-## Planning workflow
-Your primary deliverable is a **feature plan** — a Markdown document that captures:
-- **Problem summary** — What issue or feature is being addressed?
-- **Research findings** — Relevant code paths, dependencies, existing patterns discovered.
-- **Proposed approach** — How you intend to solve it, with rationale.
-- **Files to modify** — List of files you expect to touch.
-- **Risks and open questions** — Unknowns, edge cases, areas needing human input.
-- **Validation strategy** — How the change will be tested.
-- **Implementation checklist** — A detailed, phased checklist with checkboxes for step-by-step execution.
-
-Store plans under \`.feature-plans/\` at the project root (create it if missing):
-- \`.feature-plans/pending/\` — planned work not started yet
-- \`.feature-plans/wip/\` — actively in progress (move your plan here when working)
-- \`.feature-plans/done/\` — completed or superseded plans (keep for history)
-
-If \`.feature-plans/_plan_sample_format.md\` exists, use it as the reference format for your plan.
-
-After saving the plan file, run \`ao session open-plan <relative-path-to-plan>\` — this pre-loads the plan in the file preview for the user's next visit. Run it once, immediately after writing the plan.
-
-**Do not start implementation until the user approves or explicitly asks you to proceed.**
-
 ## Git Workflow
-- Create your feature branch from the **Default branch** listed under **Project Context** below (e.g. \`main\` or \`gb-personal\` — never commit directly to that branch). If you are unsure, read it from Project Context; do not assume \`main\`.
-- Open the pull request **against that same Default branch** (PR base = the branch you forked from). For personal integration lines such as \`gb-personal\`, both your branch point and PR target are that branch.
-- If your local branch was mistakenly created from the wrong base (e.g. \`main\` instead of the configured default), **rebase onto the correct Default branch** before pushing or opening the PR.
+- Always create a feature branch from the default branch (never commit directly to it).
 - Use conventional commit messages (feat:, fix:, chore:, etc.).
-- Push your branch and create a PR only after implementation is complete and tested.
+- Push your branch and create a PR when the implementation is ready.
 - Keep PRs focused — one issue per PR.
 
 ## PR Best Practices
@@ -83,14 +56,8 @@ export interface PromptBuildConfig {
   /** Pre-fetched issue context from tracker.generatePrompt() */
   issueContext?: string;
 
-  /** Session-specific instructions (rendered early as ## Session Focus) */
+  /** Explicit user prompt (appended last) */
   userPrompt?: string;
-
-  /** Decomposition context — ancestor task chain (from decomposer) */
-  lineage?: string[];
-
-  /** Decomposition context — sibling task descriptions (from decomposer) */
-  siblings?: string[];
 }
 
 // =============================================================================
@@ -105,9 +72,6 @@ function buildConfigLayer(config: PromptBuildConfig): string {
   lines.push(`- Project: ${project.name ?? projectId}`);
   lines.push(`- Repository: ${project.repo}`);
   lines.push(`- Default branch: ${project.defaultBranch}`);
-  lines.push(
-    `- Branch feature work from this default branch and open PRs with **base** = this same branch (integration / merge target).`,
-  );
 
   if (project.tracker) {
     lines.push(`- Tracker: ${project.tracker.plugin}`);
@@ -178,7 +142,7 @@ function readUserRules(project: ProjectConfig): string | null {
  * Compose a layered prompt for an agent session.
  *
  * Always returns the AO base guidance plus project context, then layers on
- * session focus, issue context, user rules, and decomposition when available.
+ * issue context, user rules, and explicit instructions when available.
  */
 export function buildPrompt(config: PromptBuildConfig): string {
   const userRules = readUserRules(config.project);
@@ -187,36 +151,17 @@ export function buildPrompt(config: PromptBuildConfig): string {
   // Layer 1: Base prompt is always included for every managed session.
   sections.push(BASE_AGENT_PROMPT);
 
-  // Layer 2: Session focus — early so the agent sees spawn-time instructions immediately
-  if (config.userPrompt) {
-    sections.push(`## Session Focus\n${config.userPrompt}`);
-  }
-
-  // Layer 3: Config-derived context
+  // Layer 2: Config-derived context
   sections.push(buildConfigLayer(config));
 
-  // Layer 4: User rules
+  // Layer 3: User rules
   if (userRules) {
     sections.push(`## Project Rules\n${userRules}`);
   }
 
-  // Layer 5: Decomposition context (lineage + siblings)
-  if (config.lineage && config.lineage.length > 0) {
-    const hierarchy = config.lineage.map((desc, i) => `${"  ".repeat(i)}${i}. ${desc}`);
-    // Add current task marker using issueId or last lineage entry
-    const currentLabel = config.issueId ?? "this task";
-    hierarchy.push(`${"  ".repeat(config.lineage.length)}${config.lineage.length}. ${currentLabel}  <-- (this task)`);
-
-    sections.push(
-      `## Task Hierarchy\nThis task is part of a larger decomposed plan. Your place in the hierarchy:\n\n\`\`\`\n${hierarchy.join("\n")}\n\`\`\`\n\nStay focused on YOUR specific task. Do not implement functionality that belongs to other tasks in the hierarchy.`,
-    );
-  }
-
-  if (config.siblings && config.siblings.length > 0) {
-    const siblingLines = config.siblings.map((s) => `  - ${s}`);
-    sections.push(
-      `## Parallel Work\nSibling tasks being worked on in parallel:\n${siblingLines.join("\n")}\n\nDo not duplicate work that sibling tasks handle. If you need interfaces/types from siblings, define reasonable stubs.`,
-    );
+  // Explicit user prompt (appended last, highest priority)
+  if (config.userPrompt) {
+    sections.push(`## Additional Instructions\n${config.userPrompt}`);
   }
 
   return sections.join("\n\n");

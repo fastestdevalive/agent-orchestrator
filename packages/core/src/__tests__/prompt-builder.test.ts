@@ -142,17 +142,13 @@ describe("buildPrompt", () => {
     expect(result).not.toBeNull();
     const promptStr = result!;
 
-    const sessionFocusIdx = promptStr.indexOf("## Session Focus");
+    const additionalIdx = promptStr.indexOf("## Additional Instructions");
     const projectContextIdx = promptStr.indexOf("## Project Context");
-    const rulesIdx = promptStr.indexOf("Project rule.");
     const userIdx = promptStr.indexOf("Focus on the API layer only.");
 
-    expect(sessionFocusIdx).toBeGreaterThan(-1);
+    expect(additionalIdx).toBeGreaterThan(-1);
     expect(projectContextIdx).toBeGreaterThan(-1);
-    expect(sessionFocusIdx).toBeLessThan(projectContextIdx);
-    expect(projectContextIdx).toBeLessThan(rulesIdx);
-    expect(userIdx).toBeGreaterThan(sessionFocusIdx);
-    expect(promptStr).toContain("## Session Focus");
+    expect(userIdx).toBeGreaterThan(additionalIdx);
   });
 
   it("builds prompt from rules alone (no issue)", () => {
@@ -218,15 +214,6 @@ describe("BASE_AGENT_PROMPT", () => {
 
   it("covers key topics", () => {
     expect(BASE_AGENT_PROMPT).toContain("Session Lifecycle");
-    expect(BASE_AGENT_PROMPT).toContain("default mode is PLANNING");
-    expect(BASE_AGENT_PROMPT).toContain("Only implement code when the user explicitly requests");
-    expect(BASE_AGENT_PROMPT).toContain("If no task or issue is specified");
-    expect(BASE_AGENT_PROMPT).toContain("wait for instructions");
-    expect(BASE_AGENT_PROMPT).toContain("Planning workflow");
-    expect(BASE_AGENT_PROMPT).toContain(".feature-plans/pending/");
-    expect(BASE_AGENT_PROMPT).toContain(".feature-plans/wip/");
-    expect(BASE_AGENT_PROMPT).toContain(".feature-plans/done/");
-    expect(BASE_AGENT_PROMPT).toContain("Do not start implementation until the user approves");
     expect(BASE_AGENT_PROMPT).toContain("Git Workflow");
     expect(BASE_AGENT_PROMPT).toContain("PR Best Practices");
     expect(BASE_AGENT_PROMPT).toContain("ao session claim-pr");

@@ -1,24 +1,68 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { homedir } from "node:os";
-import { join } from "node:path";
-import * as aoCore from "@composio/ao-core";
-import type { Session, RuntimeHandle, AgentLaunchConfig } from "@composio/ao-core";
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import type { Session, RuntimeHandle, AgentLaunchConfig } from "@aoagents/ao-core";
+
+// Mock fs/promises for getSessionInfo tests
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
+    access: vi.fn().mockRejectedValue(new Error("ENOENT")),
+    stat: vi.fn().mockRejectedValue(new Error("ENOENT")),
+    lstat: vi.fn().mockResolvedValue({ isSymbolicLink: () => false }),
+  };
+});
+
+// Mock fs (sync) for getLaunchCommand systemPromptFile symlink checks
+const { mockLstatSync } = vi.hoisted(() => ({
+  mockLstatSync: vi.fn().mockReturnValue({ isSymbolicLink: () => false }),
+}));
+
+vi.mock("node:fs", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    lstatSync: mockLstatSync,
+  };
+});
+
+// Mock activity log utilities from core
+const { mockAppendActivityEntry, mockReadLastActivityEntry, mockRecordTerminalActivity } =
+  vi.hoisted(() => ({
+    mockAppendActivityEntry: vi.fn().mockResolvedValue(undefined),
+    mockReadLastActivityEntry: vi.fn().mockResolvedValue(null),
+    mockRecordTerminalActivity: vi.fn().mockResolvedValue(undefined),
+  }));
+
+vi.mock("@aoagents/ao-core", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    appendActivityEntry: mockAppendActivityEntry,
+    readLastActivityEntry: mockReadLastActivityEntry,
+    recordTerminalActivity: mockRecordTerminalActivity,
+  };
+});
 
 // ---------------------------------------------------------------------------
 // Hoisted mocks
 // ---------------------------------------------------------------------------
-const { mockExecFileAsync } = vi.hoisted(() => ({
+const { mockExecFileAsync, mockExecFileSync } = vi.hoisted(() => ({
   mockExecFileAsync: vi.fn(),
+  mockExecFileSync: vi.fn(),
 }));
 
 vi.mock("node:child_process", () => {
   const fn = Object.assign((..._args: unknown[]) => {}, {
     [Symbol.for("nodejs.util.promisify.custom")]: mockExecFileAsync,
   });
-  return { execFile: fn };
+  return {
+    execFile: fn,
+    execFileSync: mockExecFileSync,
+  };
 });
 
-import { create, manifest, default as defaultExport } from "./index.js";
+import { create, manifest, default as defaultExport, detect } from "./index.js";
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -82,10 +126,6 @@ beforeEach(() => {
   vi.clearAllMocks();
 });
 
-afterEach(() => {
-  vi.restoreAllMocks();
-});
-
 // =========================================================================
 // Manifest & Exports
 // =========================================================================
@@ -94,7 +134,7 @@ describe("plugin manifest & exports", () => {
     expect(manifest).toEqual({
       name: "cursor",
       slot: "agent",
-      description: "Agent plugin: Cursor CLI",
+      description: "Agent plugin: Cursor Agent CLI",
       version: "0.1.0",
       displayName: "Cursor",
     });
@@ -110,11 +150,6 @@ describe("plugin manifest & exports", () => {
     expect(defaultExport.manifest).toBe(manifest);
     expect(typeof defaultExport.create).toBe("function");
   });
-
-  it("agent has promptDelivery set to inline", () => {
-    const agent = create();
-    expect(agent.promptDelivery).toBe("inline");
-  });
 });
 
 // =========================================================================
@@ -127,21 +162,41 @@ describe("getLaunchCommand", () => {
     expect(agent.getLaunchCommand(makeLaunchConfig())).toBe("agent");
   });
 
-  it("includes --model with shell-escaped value", () => {
-    const cmd = agent.getLaunchCommand(makeLaunchConfig({ model: "gpt-5" }));
-    expect(cmd).toContain("--model 'gpt-5'");
+  it("includes --force --sandbox disabled --approve-mcps when permissions=permissionless", () => {
+    const cmd = agent.getLaunchCommand(makeLaunchConfig({ permissions: "permissionless" }));
+    expect(cmd).toContain("--force");
+    expect(cmd).toContain("--sandbox disabled");
+    expect(cmd).toContain("--approve-mcps");
   });
 
-  it("includes prompt as positional argument", () => {
+  it("treats legacy permissions=skip as permissionless", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ permissions: "skip" as unknown as AgentLaunchConfig["permissions"] }),
+    );
+    expect(cmd).toContain("--force");
+  });
+
+  it("maps permissions=auto-edit to force mode on Cursor", () => {
+    const cmd = agent.getLaunchCommand(makeLaunchConfig({ permissions: "auto-edit" }));
+    expect(cmd).toContain("--force");
+  });
+
+  it("includes --model with shell-escaped value", () => {
+    const cmd = agent.getLaunchCommand(makeLaunchConfig({ model: "gpt-4o" }));
+    expect(cmd).toContain("--model 'gpt-4o'");
+  });
+
+  it("includes prompt as positional argument (not --prompt flag)", () => {
     const cmd = agent.getLaunchCommand(makeLaunchConfig({ prompt: "Fix the tests" }));
     expect(cmd).toContain("'Fix the tests'");
+    expect(cmd).not.toContain("--prompt");
   });
 
-  it("combines model and prompt", () => {
+  it("combines all options", () => {
     const cmd = agent.getLaunchCommand(
-      makeLaunchConfig({ model: "gpt-5", prompt: "Go" }),
+      makeLaunchConfig({ permissions: "permissionless", model: "sonnet", prompt: "Go" }),
     );
-    expect(cmd).toBe("agent --model 'gpt-5' 'Go'");
+    expect(cmd).toBe("agent --force --sandbox disabled --approve-mcps --model 'sonnet' -- 'Go'");
   });
 
   it("escapes single quotes in prompt (POSIX shell escaping)", () => {
@@ -151,8 +206,75 @@ describe("getLaunchCommand", () => {
 
   it("omits optional flags when not provided", () => {
     const cmd = agent.getLaunchCommand(makeLaunchConfig());
+    expect(cmd).not.toContain("--force");
     expect(cmd).not.toContain("--model");
-    expect(cmd).toBe("agent");
+  });
+
+  it("uses shell substitution for systemPromptFile with prompt (printf %s for safety)", () => {
+    // Uses $(cat ...; printf; printf %s ...) pattern to avoid shell injection
+    // This matches OpenCode's pattern exactly - prompt is shellEscaped (single quotes)
+    // and wrapped in printf %s to prevent shell expansion
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ systemPromptFile: "/path/to/system.txt", prompt: "Do the task" }),
+    );
+    expect(cmd).toContain("$(cat '/path/to/system.txt'");
+    // Must use printf %s with shellEscaped prompt for security
+    expect(cmd).toContain("printf %s 'Do the task'");
+    expect(cmd).toContain("printf '\\n\\n'");
+    // Should use double quotes to allow shell expansion
+    expect(cmd).toMatch(/--\s+".*\$\(cat/);
+  });
+
+  it("prepends inline systemPrompt to prompt when systemPromptFile not provided", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ systemPrompt: "You are an expert.", prompt: "Do the task" }),
+    );
+    expect(cmd).toContain("You are an expert.");
+    expect(cmd).toContain("Do the task");
+  });
+
+  it("prefers systemPromptFile over systemPrompt (shell substitution)", () => {
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({
+        systemPromptFile: "/path/to/file.txt",
+        systemPrompt: "Inline prompt",
+        prompt: "Task",
+      }),
+    );
+    // Should use file via $(cat) with printf %s for prompt, not inline prompt
+    expect(cmd).toContain("$(cat '/path/to/file.txt'");
+    expect(cmd).toContain("printf %s 'Task'");
+    expect(cmd).not.toContain("Inline prompt");
+  });
+
+  it("uses shell substitution for systemPromptFile without prompt", () => {
+    const cmd = agent.getLaunchCommand(makeLaunchConfig({ systemPromptFile: "/path/sys.txt" }));
+    // Without prompt, just $(cat) is used (no printf %s needed)
+    expect(cmd).toContain("$(cat '/path/sys.txt')");
+    expect(cmd).not.toContain("printf %s");
+    expect(cmd).toMatch(/--\s+".*\$\(cat/);
+  });
+
+  it("falls back to inline handling if lstat fails", () => {
+    mockLstatSync.mockImplementationOnce(() => {
+      throw new Error("ENOENT");
+    });
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ systemPromptFile: "/nonexistent.txt", prompt: "Do the task" }),
+    );
+    // Falls back to just the prompt when file doesn't exist
+    expect(cmd).toBe("agent -- 'Do the task'");
+  });
+
+  it("rejects symlinked systemPromptFile for security", () => {
+    mockLstatSync.mockReturnValueOnce({ isSymbolicLink: () => true });
+    const cmd = agent.getLaunchCommand(
+      makeLaunchConfig({ systemPromptFile: "/path/to/symlink.txt", prompt: "Do the task" }),
+    );
+    // Should skip the symlinked file and only include the prompt
+    expect(cmd).toBe("agent -- 'Do the task'");
+    // Should not use $(cat) for symlinked file
+    expect(cmd).not.toContain("$(cat");
   });
 });
 
@@ -177,12 +299,6 @@ describe("getEnvironment", () => {
     const env = agent.getEnvironment(makeLaunchConfig());
     expect(env["AO_ISSUE_ID"]).toBeUndefined();
   });
-
-  it("prepends ~/.ao/bin to PATH and sets GH_PATH for metadata wrappers", () => {
-    const env = agent.getEnvironment(makeLaunchConfig());
-    expect(env["PATH"]).toContain(join(homedir(), ".ao", "bin"));
-    expect(env["GH_PATH"]).toBe(aoCore.PREFERRED_GH_PATH);
-  });
 });
 
 // =========================================================================
@@ -191,12 +307,17 @@ describe("getEnvironment", () => {
 describe("isProcessRunning", () => {
   const agent = create();
 
-  it("returns true when agent process found on tmux pane TTY", async () => {
+  it("returns true when agent found on tmux pane TTY", async () => {
     mockTmuxWithProcess("agent");
     expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(true);
   });
 
-  it("returns false when agent process not on tmux pane TTY", async () => {
+  it("returns true when /path/to/agent found on tmux pane TTY", async () => {
+    mockTmuxWithProcess("/usr/local/bin/agent");
+    expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(true);
+  });
+
+  it("returns false when agent not on tmux pane TTY", async () => {
     mockTmuxWithProcess("agent", false);
     expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(false);
   });
@@ -234,6 +355,22 @@ describe("isProcessRunning", () => {
     expect(await agent.isProcessRunning(makeProcessHandle(789))).toBe(true);
     killSpy.mockRestore();
   });
+
+  it("finds agent on any pane in multi-pane session", async () => {
+    mockExecFileAsync.mockImplementation((cmd: string) => {
+      if (cmd === "tmux") {
+        return Promise.resolve({ stdout: "/dev/ttys001\n/dev/ttys002\n", stderr: "" });
+      }
+      if (cmd === "ps") {
+        return Promise.resolve({
+          stdout: "  PID TT ARGS\n  100 ttys001  bash\n  200 ttys002  agent --force\n",
+          stderr: "",
+        });
+      }
+      return Promise.reject(new Error("unexpected"));
+    });
+    expect(await agent.isProcessRunning(makeTmuxHandle())).toBe(true);
+  });
 });
 
 // =========================================================================
@@ -250,8 +387,30 @@ describe("detectActivity", () => {
     expect(agent.detectActivity("   \n  ")).toBe("idle");
   });
 
+  it("returns idle when prompt char visible", () => {
+    expect(agent.detectActivity("some output\n> ")).toBe("idle");
+    expect(agent.detectActivity("some output\n$ ")).toBe("idle");
+  });
+
+  it("returns idle for agent-specific prompts", () => {
+    expect(agent.detectActivity("Processing...\nagent> ")).toBe("idle");
+    expect(agent.detectActivity("Ready.\n[agent] ")).toBe("idle");
+  });
+
+  it("returns waiting_input for Y/N confirmation", () => {
+    expect(agent.detectActivity("Approve these changes?\n(Y)es/(N)o")).toBe("waiting_input");
+  });
+
+  it("returns waiting_input for continue prompt", () => {
+    expect(agent.detectActivity("Ready to proceed. Continue?")).toBe("waiting_input");
+  });
+
+  it("returns waiting_input for press enter prompt", () => {
+    expect(agent.detectActivity("Press Enter to continue")).toBe("waiting_input");
+  });
+
   it("returns active for non-empty terminal output", () => {
-    expect(agent.detectActivity("agent is processing\n")).toBe("active");
+    expect(agent.detectActivity("agent is processing files\n")).toBe("active");
   });
 });
 
@@ -261,82 +420,232 @@ describe("detectActivity", () => {
 describe("getSessionInfo", () => {
   const agent = create();
 
-  it("always returns null (not implemented)", async () => {
+  it("returns null when workspacePath is null", async () => {
+    expect(await agent.getSessionInfo(makeSession({ workspacePath: null }))).toBeNull();
+  });
+
+  it("returns null when no cursor session file exists", async () => {
+    const { readFile } = await import("node:fs/promises");
+    vi.mocked(readFile).mockRejectedValueOnce(new Error("ENOENT"));
     expect(await agent.getSessionInfo(makeSession())).toBeNull();
-    expect(await agent.getSessionInfo(makeSession({ workspacePath: "/some/path" }))).toBeNull();
+  });
+
+  it("extracts summary from cursor chat file", async () => {
+    const { access, readFile } = await import("node:fs/promises");
+    vi.mocked(access).mockResolvedValueOnce(undefined);
+    vi.mocked(readFile).mockResolvedValueOnce("# Cursor Session\n\nFix the login bug in auth.ts\n");
+    const info = await agent.getSessionInfo(makeSession());
+    expect(info).not.toBeNull();
+    expect(info!.summary).toBe("Fix the login bug in auth.ts");
+    expect(info!.summaryIsFallback).toBe(true);
+    expect(info!.agentSessionId).toBeNull();
+    expect(info!.cost).toBeUndefined();
+  });
+
+  it("truncates long summaries to 120 chars", async () => {
+    const { access, readFile } = await import("node:fs/promises");
+    const longMsg = "A".repeat(200);
+    vi.mocked(access).mockResolvedValueOnce(undefined);
+    vi.mocked(readFile).mockResolvedValueOnce(longMsg);
+    const info = await agent.getSessionInfo(makeSession());
+    expect(info!.summary).toHaveLength(123); // 120 + "..."
+    expect(info!.summary!.endsWith("...")).toBe(true);
   });
 });
 
 // =========================================================================
-// PATH wrappers & PR metadata (gh/git interception)
+// getRestoreCommand
 // =========================================================================
-describe("setupWorkspaceHooks & postLaunchSetup", () => {
-  it("calls setupPathWrapperWorkspace with worktree path", async () => {
-    const spy = vi.spyOn(aoCore, "setupPathWrapperWorkspace").mockResolvedValue(undefined);
-    const agent = create();
-    await agent.setupWorkspaceHooks!("/workspace/foo", { dataDir: "/data" });
-    expect(spy).toHaveBeenCalledWith("/workspace/foo");
-  });
+describe("getRestoreCommand", () => {
+  const agent = create();
 
-  it("postLaunchSetup skips when workspacePath is missing", async () => {
-    const spy = vi.spyOn(aoCore, "setupPathWrapperWorkspace").mockResolvedValue(undefined);
-    const agent = create();
-    await agent.postLaunchSetup!(makeSession({ workspacePath: null }));
-    expect(spy).not.toHaveBeenCalled();
-  });
-
-  it("postLaunchSetup installs wrappers in session worktree", async () => {
-    const spy = vi.spyOn(aoCore, "setupPathWrapperWorkspace").mockResolvedValue(undefined);
-    const agent = create();
-    await agent.postLaunchSetup!(makeSession({ workspacePath: "/workspace/wt" }));
-    expect(spy).toHaveBeenCalledWith("/workspace/wt");
-  });
-});
-
-describe("recordActivity", () => {
-  it("delegates to recordTerminalActivity", async () => {
-    const spy = vi.spyOn(aoCore, "recordTerminalActivity").mockResolvedValue(undefined);
-    const agent = create();
-    await agent.recordActivity!(makeSession({ workspacePath: "/workspace/wt" }), "hello\n");
-    expect(spy).toHaveBeenCalledWith("/workspace/wt", "hello\n", expect.any(Function));
-  });
-
-  it("no-ops without workspacePath", async () => {
-    const spy = vi.spyOn(aoCore, "recordTerminalActivity").mockResolvedValue(undefined);
-    const agent = create();
-    await agent.recordActivity!(makeSession({ workspacePath: null }), "x");
-    expect(spy).not.toHaveBeenCalled();
-  });
-});
-
-describe("getActivityState — AO activity JSONL", () => {
-  it("returns null when process running but no activity data and no fallback", async () => {
-    mockTmuxWithProcess("agent");
-    vi.spyOn(aoCore, "readLastActivityEntry").mockResolvedValue(null);
-    vi.spyOn(aoCore, "checkActivityLogState").mockReturnValue(null);
-    vi.spyOn(aoCore, "getActivityFallbackState").mockReturnValue(null);
-
-    const agent = create();
-    const result = await agent.getActivityState(
-      makeSession({ runtimeHandle: makeTmuxHandle(), workspacePath: "/w" }),
+  it("returns null (cursor does not support session resume)", async () => {
+    const result = await agent.getRestoreCommand!(
+      makeSession(),
+      { name: "proj", repo: "o/r", path: "/p", defaultBranch: "main", sessionPrefix: "p" },
     );
     expect(result).toBeNull();
   });
+});
 
-  it("returns waiting_input from checkActivityLogState when present", async () => {
-    mockTmuxWithProcess("agent");
-    const ts = new Date("2026-01-01T00:00:00Z");
-    vi.spyOn(aoCore, "readLastActivityEntry").mockResolvedValue({} as never);
-    vi.spyOn(aoCore, "checkActivityLogState").mockReturnValue({
-      state: "waiting_input",
-      timestamp: ts,
-    });
-    vi.spyOn(aoCore, "getActivityFallbackState").mockReturnValue(null);
+// =========================================================================
+// setupWorkspaceHooks
+// =========================================================================
+describe("setupWorkspaceHooks", () => {
+  const agent = create();
 
-    const agent = create();
-    const result = await agent.getActivityState(
-      makeSession({ runtimeHandle: makeTmuxHandle(), workspacePath: "/w" }),
+  it("is defined (delegates to shared setupPathWrapperWorkspace)", () => {
+    expect(agent.setupWorkspaceHooks).toBeDefined();
+    expect(typeof agent.setupWorkspaceHooks).toBe("function");
+  });
+});
+
+// =========================================================================
+// postLaunchSetup
+// =========================================================================
+describe("postLaunchSetup", () => {
+  const agent = create();
+
+  it("is defined", () => {
+    expect(agent.postLaunchSetup).toBeDefined();
+    expect(typeof agent.postLaunchSetup).toBe("function");
+  });
+
+  it("does nothing when workspacePath is null", async () => {
+    // Should not throw
+    await agent.postLaunchSetup!(makeSession({ workspacePath: null }));
+  });
+});
+
+// =========================================================================
+// getEnvironment — PATH wrapping
+// =========================================================================
+describe("getEnvironment PATH", () => {
+  const agent = create();
+
+  it("prepends ~/.ao/bin to PATH", () => {
+    const env = agent.getEnvironment(makeLaunchConfig());
+    expect(env["PATH"]).toMatch(/\.ao\/bin/);
+  });
+
+  it("sets GH_PATH", () => {
+    const env = agent.getEnvironment(makeLaunchConfig());
+    expect(env["GH_PATH"]).toBe("/usr/local/bin/gh");
+  });
+});
+
+// =========================================================================
+// recordActivity
+// =========================================================================
+describe("recordActivity", () => {
+  const agent = create();
+
+  it("is defined", () => {
+    expect(agent.recordActivity).toBeDefined();
+  });
+
+  it("does nothing when workspacePath is null", async () => {
+    await agent.recordActivity!(makeSession({ workspacePath: null }), "some output");
+    expect(mockRecordTerminalActivity).not.toHaveBeenCalled();
+  });
+
+  it("delegates to recordTerminalActivity", async () => {
+    await agent.recordActivity!(makeSession(), "agent is processing files");
+    expect(mockRecordTerminalActivity).toHaveBeenCalledWith(
+      "/workspace/test",
+      "agent is processing files",
+      expect.any(Function),
     );
-    expect(result).toEqual({ state: "waiting_input", timestamp: ts });
+  });
+});
+
+// =========================================================================
+// getActivityState — reads from activity JSONL
+// =========================================================================
+describe("getActivityState with activity JSONL", () => {
+  const agent = create();
+
+  it("returns exited when process is not running", async () => {
+    mockTmuxWithProcess("agent", false);
+    const result = await agent.getActivityState(makeSession({ runtimeHandle: makeTmuxHandle() }));
+    expect(result?.state).toBe("exited");
+  });
+
+  it("returns waiting_input from activity JSONL", async () => {
+    mockTmuxWithProcess("agent");
+    mockReadLastActivityEntry.mockResolvedValueOnce({
+      entry: { ts: new Date().toISOString(), state: "waiting_input", source: "terminal" },
+      modifiedAt: new Date(),
+    });
+
+    const result = await agent.getActivityState(makeSession({ runtimeHandle: makeTmuxHandle() }));
+    expect(result?.state).toBe("waiting_input");
+  });
+
+  it("returns blocked from activity JSONL", async () => {
+    mockTmuxWithProcess("agent");
+    mockReadLastActivityEntry.mockResolvedValueOnce({
+      entry: { ts: new Date().toISOString(), state: "blocked", source: "terminal" },
+      modifiedAt: new Date(),
+    });
+
+    const result = await agent.getActivityState(makeSession({ runtimeHandle: makeTmuxHandle() }));
+    expect(result?.state).toBe("blocked");
+  });
+
+  it("returns active from JSONL entry fallback when native signal fails (fresh entry)", async () => {
+    mockTmuxWithProcess("agent");
+    mockReadLastActivityEntry.mockResolvedValueOnce({
+      entry: { ts: new Date().toISOString(), state: "active", source: "terminal" },
+      modifiedAt: new Date(),
+    });
+
+    const result = await agent.getActivityState(makeSession({ runtimeHandle: makeTmuxHandle() }));
+    expect(result?.state).toBe("active");
+  });
+
+  it("returns idle from JSONL entry fallback when native signal fails (old entry with age decay)", async () => {
+    mockTmuxWithProcess("agent");
+    const oldDate = new Date(Date.now() - 10 * 60 * 1000); // 10 minutes ago
+    mockReadLastActivityEntry.mockResolvedValueOnce({
+      entry: { ts: oldDate.toISOString(), state: "active", source: "terminal" },
+      modifiedAt: oldDate,
+    });
+
+    const result = await agent.getActivityState(makeSession({ runtimeHandle: makeTmuxHandle() }));
+    expect(result?.state).toBe("idle");
+  });
+
+  it("returns null when both native signal and JSONL are unavailable", async () => {
+    mockTmuxWithProcess("agent");
+    mockReadLastActivityEntry.mockResolvedValueOnce(null);
+
+    const result = await agent.getActivityState(makeSession({ runtimeHandle: makeTmuxHandle() }));
+    expect(result).toBeNull();
+  });
+});
+
+describe("detect()", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("returns true when agent --help contains 'Cursor Agent'", () => {
+    mockExecFileSync.mockReturnValueOnce("Usage: agent [options]\n\nStart the Cursor Agent\n");
+    expect(detect()).toBe(true);
+    expect(mockExecFileSync).toHaveBeenCalledWith("agent", ["--help"], { encoding: "utf-8" });
+  });
+
+  it("returns true when agent --help contains Cursor-specific flags (fallback)", () => {
+    // Even without "Cursor Agent" text, detect via unique flag combination
+    mockExecFileSync.mockReturnValueOnce(
+      "Usage: agent\n--sandbox enabled|disabled\n--approve-mcps\n",
+    );
+    expect(detect()).toBe(true);
+  });
+
+  it("returns false when agent binary is not found", () => {
+    mockExecFileSync.mockImplementationOnce(() => {
+      throw new Error("ENOENT");
+    });
+    expect(detect()).toBe(false);
+  });
+
+  it("returns false when agent --help has neither Cursor markers nor flags", () => {
+    mockExecFileSync.mockReturnValueOnce("Some other agent\nUsage: agent [options]\n");
+    expect(detect()).toBe(false);
+  });
+
+  it("returns false when only one Cursor flag is present (not enough)", () => {
+    // Need BOTH --sandbox AND --approve-mcps to match via flags
+    mockExecFileSync.mockReturnValueOnce("Usage: agent\n--sandbox enabled|disabled\n");
+    expect(detect()).toBe(false);
+  });
+
+  it("returns false when execFileSync throws an error", () => {
+    mockExecFileSync.mockImplementationOnce(() => {
+      throw new Error("Command failed");
+    });
+    expect(detect()).toBe(false);
   });
 });

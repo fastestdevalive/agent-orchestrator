@@ -589,6 +589,7 @@ export interface Issue {
   labels: string[];
   assignee?: string;
   priority?: number;
+  branchName?: string;
 }
 
 export interface IssueFilters {
@@ -1047,6 +1048,19 @@ export interface ReactionResult {
 // CONFIGURATION
 // =============================================================================
 
+/**
+ * Power management configuration.
+ * Controls system sleep behavior while AO is running.
+ */
+export interface PowerConfig {
+  /**
+   * Prevent macOS idle sleep while AO is running.
+   * Uses `caffeinate -i -w <pid>` to hold an assertion.
+   * Defaults to true on macOS, no-op on other platforms.
+   */
+  preventIdleSleep: boolean;
+}
+
 /** Top-level orchestrator configuration (from agent-orchestrator.yaml) */
 export interface OrchestratorConfig {
   /**
@@ -1067,6 +1081,9 @@ export interface OrchestratorConfig {
 
   /** Milliseconds before a "ready" session becomes "idle" (default: 300000 = 5 min) */
   readyThresholdMs: number;
+
+  /** Power management settings (idle sleep prevention, etc.). Populated with defaults post-validation. */
+  power?: PowerConfig;
 
   /** Default plugin selections */
   defaults: DefaultPlugins;
@@ -1418,6 +1435,7 @@ export interface SessionMetadata {
   directTerminalWsPort?: number;
   opencodeSessionId?: string;
   pinnedSummary?: string; // First quality summary, pinned for display stability
+  userPrompt?: string; // Prompt used when spawning without a tracker issue
 }
 
 // =============================================================================
@@ -1429,12 +1447,6 @@ export interface SessionManager {
   spawn(config: SessionSpawnConfig): Promise<Session>;
   spawnOrchestrator(config: OrchestratorSpawnConfig): Promise<Session>;
   restore(sessionId: SessionId, options?: RestoreOptions): Promise<Session>;
-  /** Extra shell tmux in the parent's worktree (metadata id `{parent}-t{n}`). */
-  createSubSession(sessionId: SessionId): Promise<SubSession>;
-  listSubSessions(sessionId: SessionId): Promise<SubSession[]>;
-  killSubSession(sessionId: SessionId, subSessionId: string): Promise<void>;
-  /** Recreate tmux for a terminal sub-session if it exited (lazy tab restore). */
-  restoreTerminalSubSession(sessionId: SessionId, subSessionId: SessionId): Promise<SubSession>;
   list(projectId?: string): Promise<Session[]>;
   get(sessionId: SessionId): Promise<Session | null>;
   kill(sessionId: SessionId, options?: { purgeOpenCode?: boolean }): Promise<void>;
