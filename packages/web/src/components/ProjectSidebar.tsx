@@ -11,7 +11,7 @@ import {
   type DashboardSession,
   type AttentionLevel,
 } from "@/lib/types";
-import { isOrchestratorSession } from "@composio/ao-core/types";
+import { isOrchestratorSession } from "@aoagents/ao-core/types";
 import { getSessionSidebarLabel, stripBranchHashPrefix } from "@/lib/format";
 import { useShowKilledSessions } from "@/hooks/useShowKilledSessions";
 import { useShowDoneSessions } from "@/hooks/useShowDoneSessions";
@@ -25,6 +25,8 @@ interface ProjectSidebarProps {
   activeSessionId: string | undefined;
   collapsed?: boolean;
   onToggleCollapsed?: () => void;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
   isLoading?: boolean;
   onSessionCreated?: (session: DashboardSession) => void;
 }

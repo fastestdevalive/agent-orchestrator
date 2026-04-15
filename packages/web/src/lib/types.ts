@@ -2,10 +2,13 @@
  * Dashboard-specific types for the web UI.
  *
  * Core types (SessionStatus, ActivityState, CIStatus, ReviewDecision, etc.)
- * are re-exported from @composio/ao-core. Dashboard-specific types
+ * are re-exported from @aoagents/ao-core. Dashboard-specific types
  * extend/flatten the core types for client-side rendering (e.g. DashboardPR
  * flattens core PRInfo + MergeReadiness + CICheck[] + ReviewComment[]).
  */
+
+// Re-export global-pause type for components that import it from here
+export type { GlobalPauseState } from "./global-pause.js";
 
 // Re-export core types used directly by the dashboard
 export type {
@@ -15,9 +18,7 @@ export type {
   ReviewDecision,
   MergeReadiness,
   PRState,
-} from "@composio/ao-core/types";
-
-export type { GlobalPauseState } from "./global-pause";
+} from "@aoagents/ao-core/types";
 
 import {
   ACTIVITY_STATE,
@@ -32,7 +33,7 @@ import {
   type SessionStatus,
   type ActivityState,
   type ReviewDecision,
-} from "@composio/ao-core/types";
+} from "@aoagents/ao-core/types";
 
 // Re-export for use in client components
 export { CI_STATUS, TERMINAL_STATUSES, TERMINAL_ACTIVITIES, NON_RESTORABLE_STATUSES };
@@ -46,16 +47,8 @@ export { CI_STATUS, TERMINAL_STATUSES, TERMINAL_ACTIVITIES, NON_RESTORABLE_STATU
  * 4. pending — Waiting on external (reviewer, CI). Nothing to do right now.
  * 5. working — Agents doing their thing. Don't interrupt.
  * 6. done    — Merged or terminated. Archive.
- * 7. killed — Kanban-only column for `status === "killed"` (never returned by `getAttentionLevel`).
  */
-export type AttentionLevel =
-  | "merge"
-  | "respond"
-  | "review"
-  | "pending"
-  | "working"
-  | "done"
-  | "killed";
+export type AttentionLevel = "merge" | "respond" | "review" | "pending" | "working" | "done" | "killed";
 
 /** Attention from session heuristics — never `"killed"` (that column is status-driven only). */
 export type SessionAttentionLevel = Exclude<AttentionLevel, "killed">;
@@ -78,6 +71,7 @@ export interface DashboardSession {
   issueUrl: string | null; // Full issue URL
   issueLabel: string | null; // Human-readable label (e.g., "INT-1327", "#42")
   issueTitle: string | null; // Full issue title (e.g., "Add user authentication flow")
+  userPrompt?: string | null; // Prompt used when spawning without an issue
   summary: string | null;
   /** True when the summary is a low-quality fallback (e.g. truncated spawn prompt) */
   summaryIsFallback: boolean;
@@ -85,11 +79,6 @@ export interface DashboardSession {
   lastActivityAt: string;
   pr: DashboardPR | null;
   metadata: Record<string, string>;
-}
-
-/** Strict product filter: only sessions whose lifecycle status is killed. */
-export function isKilledSession(session: Pick<DashboardSession, "status">): boolean {
-  return session.status === "killed";
 }
 
 /**
@@ -108,6 +97,7 @@ export interface DashboardPR {
   state: "open" | "merged" | "closed";
   additions: number;
   deletions: number;
+  changedFiles?: number;
   ciStatus: CIStatus;
   ciChecks: DashboardCICheck[];
   reviewDecision: ReviewDecision;
@@ -205,6 +195,11 @@ export function isPRMergeReady(pr: DashboardPR): boolean {
     pr.mergeability.approved &&
     pr.mergeability.noConflicts
   );
+}
+
+/** Strict product filter: only sessions whose lifecycle status is killed. */
+export function isKilledSession(session: Pick<DashboardSession, "status">): boolean {
+  return session.status === "killed";
 }
 
 /** Determines which attention zone a session belongs to */

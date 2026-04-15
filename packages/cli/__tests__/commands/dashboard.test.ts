@@ -43,7 +43,7 @@ describe("cleanNextCache", () => {
     mkdirSync(webDir, { recursive: true });
     mkdirSync(join(webDir, ".next", "server", "vendor-chunks"), { recursive: true });
     writeFileSync(
-      join(webDir, ".next", "server", "vendor-chunks", "@xterm+xterm@6.0.0.js"),
+      join(webDir, ".next", "server", "vendor-chunks", "xterm@5.3.0.js"),
       "module.exports = {}",
     );
 
@@ -93,7 +93,7 @@ describe("isInstalledUnderNodeModules", () => {
   it("returns true for a Unix node_modules path segment", async () => {
     const { isInstalledUnderNodeModules } = await import("../../src/lib/dashboard-rebuild.js");
 
-    expect(isInstalledUnderNodeModules("/usr/local/lib/node_modules/@composio/ao-web")).toBe(true);
+    expect(isInstalledUnderNodeModules("/usr/local/lib/node_modules/@aoagents/ao-web")).toBe(true);
   });
 
   it("returns true for a Windows node_modules path segment", async () => {
@@ -124,7 +124,7 @@ describe("assertDashboardRebuildSupported", () => {
     const { assertDashboardRebuildSupported } = await import("../../src/lib/dashboard-rebuild.js");
 
     expect(() =>
-      assertDashboardRebuildSupported("/usr/local/lib/node_modules/@composio/ao-web"),
+      assertDashboardRebuildSupported("/usr/local/lib/node_modules/@aoagents/ao-web"),
     ).toThrow("Dashboard rebuild is only available from a source checkout");
   });
 });
@@ -164,7 +164,7 @@ describe("rebuildDashboardProductionArtifacts", () => {
     const { rebuildDashboardProductionArtifacts } = await import("../../src/lib/dashboard-rebuild.js");
 
     await expect(
-      rebuildDashboardProductionArtifacts("/usr/local/lib/node_modules/@composio/ao-web"),
+      rebuildDashboardProductionArtifacts("/usr/local/lib/node_modules/@aoagents/ao-web"),
     ).rejects.toThrow("Dashboard rebuild is only available from a source checkout");
   });
 });
@@ -187,7 +187,7 @@ describe("looksLikeStaleBuild pattern matching", () => {
   it("detects vendor-chunks module not found (the actual bug)", () => {
     // This is the exact error from the bug report
     const stderr =
-      "Error: Cannot find module '/path/to/.next/server/vendor-chunks/@xterm+xterm@6.0.0.js'";
+      "Error: Cannot find module '/path/to/.next/server/vendor-chunks/xterm@5.3.0.js'";
     expect(looksLikeStaleBuild(stderr)).toBe(true);
   });
 

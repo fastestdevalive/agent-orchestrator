@@ -6,9 +6,10 @@ import "server-only";
  * Lazily initializes config, plugin registry, and session manager.
  * Cached in globalThis to survive Next.js HMR reloads in development.
  *
- * NOTE: Most plugins use static imports so Next.js webpack can resolve them.
- * Optional agent plugins (cursor, amp) use literal dynamic `import()` with
- * try/catch so startup mirrors core `loadBuiltins()` when a package is missing.
+ * NOTE: Plugins are explicitly imported here because Next.js webpack
+ * cannot resolve dynamic `import(variable)` expressions used by the
+ * core plugin registry's loadBuiltins(). Static imports let webpack
+ * bundle them correctly.
  */
 
 import {
@@ -16,10 +17,6 @@ import {
   createPluginRegistry,
   createSessionManager,
   createLifecycleManager,
-  decompose,
-  getLeaves,
-  getSiblings,
-  formatPlanTree,
   type OrchestratorConfig,
   type PluginRegistry,
   type OpenCodeSessionManager,
@@ -29,21 +26,19 @@ import {
   type Tracker,
   type Issue,
   type Session,
-  type DecomposerConfig,
-  type PluginModule,
-  DEFAULT_DECOMPOSER_CONFIG,
   isOrchestratorSession,
   TERMINAL_STATUSES,
-} from "@composio/ao-core";
+} from "@aoagents/ao-core";
 
 // Static plugin imports — webpack needs these to be string literals
-import pluginRuntimeTmux from "@composio/ao-plugin-runtime-tmux";
-import pluginAgentClaudeCode from "@composio/ao-plugin-agent-claude-code";
-import pluginAgentOpencode from "@composio/ao-plugin-agent-opencode";
-import pluginWorkspaceWorktree from "@composio/ao-plugin-workspace-worktree";
-import pluginScmGithub from "@composio/ao-plugin-scm-github";
-import pluginTrackerGithub from "@composio/ao-plugin-tracker-github";
-import pluginTrackerLinear from "@composio/ao-plugin-tracker-linear";
+import pluginRuntimeTmux from "@aoagents/ao-plugin-runtime-tmux";
+import pluginAgentClaudeCode from "@aoagents/ao-plugin-agent-claude-code";
+import pluginAgentCursor from "@aoagents/ao-plugin-agent-cursor";
+import pluginAgentOpencode from "@aoagents/ao-plugin-agent-opencode";
+import pluginWorkspaceWorktree from "@aoagents/ao-plugin-workspace-worktree";
+import pluginScmGithub from "@aoagents/ao-plugin-scm-github";
+import pluginTrackerGithub from "@aoagents/ao-plugin-tracker-github";
+import pluginTrackerLinear from "@aoagents/ao-plugin-tracker-linear";
 
 export interface Services {
   config: OrchestratorConfig;
@@ -74,28 +69,6 @@ export function getServices(): Promise<Services> {
   return globalForServices._aoServicesInit;
 }
 
-/** Register optional agent plugins — literal `import()` paths so webpack can resolve each package. */
-async function registerOptionalAgentPlugins(registry: PluginRegistry): Promise<void> {
-  try {
-    const rawCursor = await import("@composio/ao-plugin-agent-cursor");
-    const cursorMod = (rawCursor.default ?? rawCursor) as PluginModule;
-    if (cursorMod.manifest && typeof cursorMod.create === "function") {
-      registry.register(cursorMod);
-    }
-  } catch {
-    // Plugin not installed or failed to load — skip (mirrors core loadBuiltins)
-  }
-  try {
-    const rawAmp = await import("@composio/ao-plugin-agent-amp");
-    const ampMod = (rawAmp.default ?? rawAmp) as PluginModule;
-    if (ampMod.manifest && typeof ampMod.create === "function") {
-      registry.register(ampMod);
-    }
-  } catch {
-    // Plugin not installed or failed to load — skip (mirrors core loadBuiltins)
-  }
-}
-
 async function initServices(): Promise<Services> {
   const config = loadConfig();
   const registry = createPluginRegistry();
@@ -103,8 +76,8 @@ async function initServices(): Promise<Services> {
   // Register plugins explicitly (webpack can't handle dynamic import() in core)
   registry.register(pluginRuntimeTmux);
   registry.register(pluginAgentClaudeCode);
+  registry.register(pluginAgentCursor);
   registry.register(pluginAgentOpencode);
-  await registerOptionalAgentPlugins(registry);
   registry.register(pluginWorkspaceWorktree);
   registry.register(pluginScmGithub);
   registry.register(pluginTrackerGithub);
@@ -173,9 +146,15 @@ async function labelIssuesForVerification(
       continue;
     }
 
+    const issueId = session.issueId;
+    if (!issueId) {
+      processedIssues.add(key);
+      continue;
+    }
+
     try {
       await tracker.updateIssue(
-        session.issueId!,
+        issueId,
         {
           labels: ["merged-unverified"],
           removeLabels: ["agent:backlog", "agent:in-progress"],
@@ -256,7 +235,9 @@ export async function pollBacklog(): Promise<void> {
         ) && !TERMINAL_STATUSES.has(session.status),
     );
     const activeIssueIds = new Set(
-      workerSessions.filter((s) => s.issueId).map((s) => s.issueId!.toLowerCase()),
+      workerSessions
+        .map((session) => session.issueId?.toLowerCase())
+        .filter((issueId): issueId is string => Boolean(issueId)),
     );
 
     // Auto-scaling: respect max concurrent agents
@@ -287,65 +268,8 @@ export async function pollBacklog(): Promise<void> {
         if (activeIssueIds.has(issue.id.toLowerCase())) continue;
 
         try {
-          const decompConfig = project.decomposer;
-          const shouldDecompose = decompConfig?.enabled ?? false;
-
-          if (shouldDecompose) {
-            // Decompose the issue before spawning
-            const taskDescription = `${issue.title}\n\n${issue.description}`;
-            const decomposerConfig: DecomposerConfig = {
-              ...DEFAULT_DECOMPOSER_CONFIG,
-              ...decompConfig,
-            };
-
-            console.log(`[backlog] Decomposing issue ${issue.id}: "${issue.title}"`);
-            const plan = await decompose(taskDescription, decomposerConfig);
-            const leaves = getLeaves(plan.tree);
-
-            if (leaves.length <= 1) {
-              // Atomic — spawn directly
-              await sessionManager.spawn({ projectId, issueId: issue.id });
-              availableSlots--;
-            } else if (decomposerConfig.requireApproval) {
-              // Post plan as comment and wait for human approval
-              const treeText = formatPlanTree(plan.tree);
-              if (tracker.updateIssue) {
-                await tracker.updateIssue(
-                  issue.id,
-                  {
-                    comment: `## Decomposition Plan\n\n\`\`\`\n${treeText}\n\`\`\`\n\n${leaves.length} subtasks identified. Remove \`agent:backlog\` and add \`agent:decompose-approved\` to execute.`,
-                    labels: ["agent:decompose-pending"],
-                    removeLabels: ["agent:backlog"],
-                  },
-                  project,
-                );
-              }
-              console.log(
-                `[backlog] Posted decomposition plan for ${issue.id} (${leaves.length} subtasks, awaiting approval)`,
-              );
-              continue;
-            } else {
-              // Auto-execute: spawn each leaf with lineage context
-              console.log(
-                `[backlog] Auto-executing decomposition for ${issue.id} (${leaves.length} subtasks)`,
-              );
-              for (const leaf of leaves) {
-                if (availableSlots <= 0) break;
-                const siblings = getSiblings(plan.tree, leaf.id);
-                await sessionManager.spawn({
-                  projectId,
-                  issueId: issue.id,
-                  lineage: leaf.lineage,
-                  siblings,
-                });
-                availableSlots--;
-              }
-            }
-          } else {
-            // No decomposition — spawn directly (classic behavior)
-            await sessionManager.spawn({ projectId, issueId: issue.id });
-            availableSlots--;
-          }
+          await sessionManager.spawn({ projectId, issueId: issue.id });
+          availableSlots--;
 
           activeIssueIds.add(issue.id.toLowerCase());
 

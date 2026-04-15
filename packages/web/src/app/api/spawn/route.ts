@@ -1,10 +1,8 @@
 import { type NextRequest } from "next/server";
-import { stripControlChars, validateIdentifier } from "@/lib/validation";
+import { validateIdentifier, validateString, validateConfiguredProject } from "@/lib/validation";
 import { getServices } from "@/lib/services";
 import { sessionToDashboard } from "@/lib/serialize";
 import { getCorrelationId, jsonWithCorrelation, recordApiObservation } from "@/lib/observability";
-
-const MAX_SPAWN_PROMPT_CHARS = 32_768;
 
 /** POST /api/spawn — Spawn a new session */
 export async function POST(request: NextRequest) {
@@ -27,41 +25,42 @@ export async function POST(request: NextRequest) {
     }
   }
 
-  if (body.agent !== undefined && body.agent !== null && body.agent !== "") {
-    const agentErr = validateIdentifier(body.agent, "agent");
-    if (agentErr) {
-      return jsonWithCorrelation({ error: agentErr }, { status: 400 }, correlationId);
-    }
-  }
-
-  let prompt: string | undefined;
-  if (body.prompt !== undefined && body.prompt !== null && body.prompt !== "") {
-    if (typeof body.prompt !== "string") {
-      return jsonWithCorrelation({ error: "prompt must be a string" }, { status: 400 }, correlationId);
-    }
-    if (body.prompt.length > MAX_SPAWN_PROMPT_CHARS) {
-      return jsonWithCorrelation(
-        { error: `prompt must be at most ${MAX_SPAWN_PROMPT_CHARS} characters` },
-        { status: 400 },
-        correlationId,
-      );
-    }
-    const cleaned = stripControlChars(body.prompt).trim();
-    if (cleaned.length > 0) {
-      prompt = cleaned;
+  // Prompt validated here; sanitized (newline stripping) below after project validation
+  if (body.prompt !== undefined && body.prompt !== null) {
+    const promptErr = validateString(body.prompt, "prompt", 4096);
+    if (promptErr) {
+      return jsonWithCorrelation({ error: promptErr }, { status: 400 }, correlationId);
     }
   }
 
   try {
     const { config, sessionManager } = await getServices();
+    const projectId = body.projectId as string;
+    const projectErr = validateConfiguredProject(config.projects, projectId);
+    if (projectErr) {
+      recordApiObservation({
+        config,
+        method: "POST",
+        path: "/api/spawn",
+        correlationId,
+        startedAt,
+        outcome: "failure",
+        statusCode: 404,
+        projectId,
+        reason: projectErr,
+        data: { issueId: body.issueId },
+      });
+      return jsonWithCorrelation({ error: projectErr }, { status: 404 }, correlationId);
+    }
+
+    // Strip newlines from prompt to prevent metadata injection (key=value format uses \n as delimiter)
+    const rawPrompt = (body.prompt as string) ?? undefined;
+    const prompt = rawPrompt ? rawPrompt.replace(/[\r\n]/g, " ").trim() : undefined;
+
     const session = await sessionManager.spawn({
-      projectId: body.projectId as string,
+      projectId,
       issueId: (body.issueId as string) ?? undefined,
-      agent:
-        typeof body.agent === "string" && body.agent.trim() !== ""
-          ? body.agent.trim()
-          : undefined,
-      prompt,
+      prompt: prompt || undefined,
     });
 
     recordApiObservation({

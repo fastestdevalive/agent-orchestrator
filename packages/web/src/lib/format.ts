@@ -7,7 +7,6 @@ import type { DashboardSession } from "./types.js";
 
 /**
  * Remove a leading `#` (or run of `#`) from branch strings.
- * Some payloads prefix branch names like issue refs; git itself does not use `#` in names.
  */
 export function stripBranchHashPrefix(branch: string): string {
   return branch.trim().replace(/^#+/, "").trim();
@@ -20,11 +19,8 @@ export function stripBranchHashPrefix(branch: string): string {
  *       "session/ao-52"         → "ao-52"
  */
 export function humanizeBranch(branch: string): string {
-  const cleaned = stripBranchHashPrefix(branch);
-  if (!cleaned) return "";
-
   // Remove common prefixes
-  const withoutPrefix = cleaned.replace(
+  const withoutPrefix = branch.replace(
     /^(?:feat|fix|chore|refactor|docs|test|ci|session|release|hotfix|feature|bugfix|build|wip|improvement)\//,
     "",
   );
@@ -41,11 +37,12 @@ export function humanizeBranch(branch: string): string {
  * Fallback chain (ordered by signal quality):
  *   1. PR title         — human-visible deliverable name
  *   2. Issue title       — human-written task description
- *   3. Humanized branch  — stable task identifier when no explicit title exists
- *   4. Pinned summary    — first quality summary, stable across agent updates
- *   5. Quality summary   — live summary, but can drift as the session evolves
- *   6. Any summary       — even a fallback excerpt is better than nothing
- *   7. Status text       — absolute fallback
+ *   3. User prompt       — freeform spawn instructions (prompt-only sessions)
+ *   4. Humanized branch  — stable task identifier when no explicit title exists
+ *   5. Pinned summary    — first quality summary, stable across agent updates
+ *   6. Quality summary   — live summary, but can drift as the session evolves
+ *   7. Any summary       — even a fallback excerpt is better than nothing
+ *   8. Status text       — absolute fallback
  */
 export function getSessionTitle(session: DashboardSession): string {
   // 1. PR title — always best
@@ -54,26 +51,28 @@ export function getSessionTitle(session: DashboardSession): string {
   // 2. Issue title — human-written task description
   if (session.issueTitle) return session.issueTitle;
 
-  // 3. Humanized branch — stable semantic fallback
+  // 3. User prompt — freeform spawn instructions (prompt-only sessions have no issue)
+  if (session.userPrompt) return session.userPrompt;
+
+  // 4. Humanized branch — stable semantic fallback
   if (session.branch) return humanizeBranch(session.branch);
 
-  // 4. Pinned summary — first quality summary, stable across agent updates
+  // 5. Pinned summary — first quality summary, stable across agent updates
   const pinnedSummary = session.metadata["pinnedSummary"];
   if (pinnedSummary) return pinnedSummary;
 
-  // 5. Quality summary — skip fallback summaries (truncated spawn prompts)
+  // 6. Quality summary — skip fallback summaries (truncated spawn prompts)
   if (session.summary && !session.summaryIsFallback) {
     return session.summary;
   }
 
-  // 6. Any summary — even fallback excerpts beat raw status text
+  // 7. Any summary — even fallback excerpts beat raw status text
   if (session.summary) return session.summary;
 
-  // 7. Status
+  // 8. Status
   return session.status;
 }
 
-/** True when the issue label is only digits, optionally with a leading `#` (e.g. `#42`, `7`). */
 export function isNumericIssueLabel(label: string | null | undefined): boolean {
   if (label === undefined || label === null) return false;
   const t = label.trim();

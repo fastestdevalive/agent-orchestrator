@@ -1,10 +1,26 @@
-import {
-  GLOBAL_PAUSE_REASON_KEY,
-  GLOBAL_PAUSE_SOURCE_KEY,
-  GLOBAL_PAUSE_UNTIL_KEY,
-  isOrchestratorSession,
-  parsePauseUntil,
-} from "@composio/ao-core";
+// Self-contained web-local global pause — inlines the constants that were
+// removed from @aoagents/ao-core when the core revert happened (PR #908).
+// This file intentionally does not import from core to stay build-clean.
+
+const GLOBAL_PAUSE_UNTIL_KEY = "globalPauseUntil";
+const GLOBAL_PAUSE_REASON_KEY = "globalPauseReason";
+const GLOBAL_PAUSE_SOURCE_KEY = "globalPauseSource";
+
+function parsePauseUntil(raw: string | undefined): Date | null {
+  if (!raw) return null;
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) return null;
+  return parsed;
+}
+
+function isOrchestratorSession(
+  session: { id: string; projectId: string; metadata: Record<string, string> },
+  sessionPrefix: string,
+  _allSessionPrefixes: string[],
+): boolean {
+  // Orchestrator sessions have a role=orchestrator in metadata
+  return session.metadata["role"] === "orchestrator" || session.id.startsWith(`${sessionPrefix}-orch`);
+}
 
 export interface GlobalPauseState {
   pausedUntil: string;

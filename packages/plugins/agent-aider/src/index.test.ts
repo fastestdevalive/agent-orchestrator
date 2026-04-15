@@ -1,5 +1,32 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import type { Session, RuntimeHandle, AgentLaunchConfig } from "@composio/ao-core";
+import type { Session, RuntimeHandle, AgentLaunchConfig } from "@aoagents/ao-core";
+
+// Mock fs/promises for getSessionInfo tests (readFile for .aider.chat.history.md)
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    readFile: vi.fn().mockRejectedValue(new Error("ENOENT")),
+  };
+});
+
+// Mock activity log utilities from core
+const { mockAppendActivityEntry, mockReadLastActivityEntry, mockRecordTerminalActivity } =
+  vi.hoisted(() => ({
+    mockAppendActivityEntry: vi.fn().mockResolvedValue(undefined),
+    mockReadLastActivityEntry: vi.fn().mockResolvedValue(null),
+    mockRecordTerminalActivity: vi.fn().mockResolvedValue(undefined),
+  }));
+
+vi.mock("@aoagents/ao-core", async (importOriginal) => {
+  const actual = (await importOriginal()) as Record<string, unknown>;
+  return {
+    ...actual,
+    appendActivityEntry: mockAppendActivityEntry,
+    readLastActivityEntry: mockReadLastActivityEntry,
+    recordTerminalActivity: mockRecordTerminalActivity,
+  };
+});
 
 // Mock fs/promises for getSessionInfo tests (readFile for .aider.chat.history.md)
 vi.mock("node:fs/promises", async (importOriginal) => {

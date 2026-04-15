@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, type ReactNode } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
-import { CI_STATUS, isRestorable } from "@composio/ao-core/types";
+import { CI_STATUS, isRestorable } from "@aoagents/ao-core/types";
 import { type DashboardSession, type DashboardPR, isPRMergeReady } from "@/lib/types";
 import { cn } from "@/lib/cn";
 import { CICheckList } from "./CIBadge";

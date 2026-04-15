@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect } from "react";
-import { type DashboardSession, type SessionAttentionLevel, getAttentionLevel } from "@/lib/types";
+import { type AttentionLevel, type DashboardSession, type SessionAttentionLevel, getAttentionLevel } from "@/lib/types";
 
 /**
  * Determine overall health from sessions.
@@ -39,7 +39,8 @@ function generateFaviconSvg(initial: string, color: string): string {
 }
 
 interface DynamicFaviconProps {
-  sessions: DashboardSession[];
+  sessions?: DashboardSession[];
+  sseAttentionLevels?: Readonly<Record<string, AttentionLevel>>;
   projectName?: string;
 }
 
@@ -47,7 +48,7 @@ interface DynamicFaviconProps {
  * Client component that dynamically updates the browser favicon
  * based on system health (session attention levels).
  */
-export function DynamicFavicon({ sessions, projectName = "A" }: DynamicFaviconProps) {
+export function DynamicFavicon({ sessions = [], projectName = "A" }: DynamicFaviconProps) {
   const initial = projectName.charAt(0).toUpperCase();
 
   useEffect(() => {

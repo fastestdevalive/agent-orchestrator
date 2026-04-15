@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { NotifyAction, OrchestratorEvent } from "@composio/ao-core";
+import type { NotifyAction, OrchestratorEvent } from "@aoagents/ao-core";
 import { create, manifest } from "./index.js";
 
 function makeEvent(overrides: Partial<OrchestratorEvent> = {}): OrchestratorEvent {
@@ -162,8 +162,9 @@ describe("notifier-discord", () => {
     });
     await notifier.notify(makeEvent());
 
-    const url = fetchMock.mock.calls[0][0];
-    expect(url).toContain("thread_id=1234567890");
+    // Discord requires thread_id as a URL query param, not in the JSON body
+    const calledUrl = fetchMock.mock.calls[0][0];
+    expect(calledUrl).toBe("https://discord.com/api/webhooks/123/abc?thread_id=1234567890");
   });
 
   it("is a no-op when webhookUrl not configured", async () => {
@@ -194,7 +195,7 @@ describe("notifier-discord", () => {
   });
 
   it("handles 204 No Content as success", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({ ok: false, status: 204 });
+    const fetchMock = vi.fn().mockResolvedValue({ ok: true, status: 204 });
     vi.stubGlobal("fetch", fetchMock);
 
     const notifier = create({ webhookUrl: "https://discord.com/api/webhooks/123/abc" });

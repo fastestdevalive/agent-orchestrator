@@ -31,6 +31,49 @@ interface PluginConfig {
   boardScanIntervalMs?: number;
 }
 
+/** Minimal shape of the OpenClaw plugin API passed to the default export. */
+interface PluginApi {
+  pluginConfig?: PluginConfig;
+  logger: { info: (msg: string) => void; warn: (msg: string) => void };
+  on?: (name: string, handler: (event: PluginEvent) => Promise<void>, opts?: { priority: number }) => void;
+  registerHook?: (name: string, handler: (event: PluginEvent) => Promise<void>, opts?: { priority: number }) => void;
+  registerCommand?: (cmd: CommandRegistration) => void;
+  registerTool?: (tool: Record<string, unknown>) => void;
+  registerService?: (svc: Record<string, unknown>) => void;
+  runtime?: {
+    sendMessageToDefaultSession?: (message: string) => void;
+  };
+}
+
+interface CommandRegistration {
+  name: string;
+  description: string;
+  acceptsArgs: boolean;
+  requireAuth: boolean;
+  handler: (ctx: CommandContext) => Promise<CommandResult>;
+}
+
+interface CommandResult {
+  text: string;
+}
+
+interface PluginEvent {
+  sessionKey?: string;
+  sessionId?: string;
+  channelId?: string;
+  message?: { text?: string; content?: string };
+  text?: string;
+  content?: string;
+  appendSystemContext?: (text: string) => void;
+  prependContext?: (text: string) => void;
+  context?: Record<string, unknown>;
+  messages?: Array<{ role: string; content: string }>;
+}
+
+interface CommandContext {
+  args?: string;
+}
+
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
@@ -500,52 +543,8 @@ function isWorkRelated(message: string): boolean {
 // Plugin entry point
 // ---------------------------------------------------------------------------
 
-interface PluginApi {
-  pluginConfig?: PluginConfig;
-  logger: { info: (msg: string) => void; warn: (msg: string) => void };
-  on?: (name: string, handler: (event: OpenClawEvent) => Promise<void>, opts?: Record<string, unknown>) => void;
-  registerHook?: (name: string, handler: (event: OpenClawEvent) => Promise<void>, opts?: Record<string, unknown>) => void;
-  registerCommand: (cmd: PluginCommand) => void;
-  registerAgent: (agent: PluginAgent) => void;
-}
-
-interface OpenClawEvent {
-  sessionKey?: string;
-  sessionId?: string;
-  channelId?: string;
-  message?: { text?: string; content?: string };
-  text?: string;
-  content?: string;
-  appendSystemContext?: (context: string) => void;
-  prependContext?: (context: string) => void;
-  context?: Record<string, unknown>;
-  messages?: Array<{ role: string; content: string }>;
-}
-
-interface PluginCommand {
-  name: string;
-  description: string;
-  acceptsArgs: boolean;
-  requireAuth: boolean;
-  handler: (ctx: CommandContext) => Promise<CommandResult>;
-}
-
-interface CommandContext {
-  args?: string;
-}
-
-interface CommandResult {
-  text: string;
-}
-
-interface PluginAgent {
-  name: string;
-  description: string;
-  execute: (params: Record<string, unknown>) => Promise<unknown>;
-}
-
 export default function (api: PluginApi) {
-  const config: PluginConfig = (api.pluginConfig as PluginConfig) || {};
+  const config: PluginConfig = api.pluginConfig || {};
 
   // =========================================================================
   // HOOKS — intercept work-related messages and inject live data
@@ -610,12 +609,12 @@ export default function (api: PluginApi) {
     }
   }
 
-  function getSessionKey(event: OpenClawEvent): string {
+  function getSessionKey(event: PluginEvent): string {
     return event?.sessionKey || event?.sessionId || event?.channelId || "default";
   }
 
   // Hook 1: message_received — detect work-related inbound messages
-  const onMessageReceived = async (event: OpenClawEvent) => {
+  const onMessageReceived = async (event: PluginEvent) => {
     const message =
       event?.message?.text || event?.message?.content || event?.text || event?.content || "";
 
@@ -627,7 +626,7 @@ export default function (api: PluginApi) {
   };
 
   // Hook 2: before_prompt_build — inject AO routing context + live data
-  const onBeforePromptBuild = async (event: OpenClawEvent) => {
+  const onBeforePromptBuild = async (event: PluginEvent) => {
     const key = getSessionKey(event);
 
     // Inform the model that AO is available and what it offers.
@@ -666,7 +665,7 @@ export default function (api: PluginApi) {
   };
 
   // Register hooks using the correct OpenClaw event names
-  const register = (name: string, handler: (event: OpenClawEvent) => Promise<void>) => {
+  const register = (name: string, handler: (event: PluginEvent) => Promise<void>) => {
     try {
       if (typeof api.on === "function") {
         api.on(name, handler, { priority: 10 });
@@ -944,15 +943,11 @@ export default function (api: PluginApi) {
           type: "string",
           description: "Immediately claim an existing PR number for the session",
         },
-        decompose: {
-          type: "boolean",
-          description: "Decompose issue into subtasks before spawning",
-        },
       },
     },
     async execute(
       _toolCallId: string,
-      params: { issue?: string; agent?: string; claimPr?: string; decompose?: boolean },
+      params: { issue?: string; agent?: string; claimPr?: string },
     ) {
       const args = ["spawn"];
       if (params.issue) {
@@ -964,7 +959,6 @@ export default function (api: PluginApi) {
       }
       if (params.agent) args.push("--agent", sanitizeCliArg(params.agent));
       if (params.claimPr) args.push("--claim-pr", sanitizeCliArg(params.claimPr));
-      if (params.decompose) args.push("--decompose");
       const result = await spawnWithRetry(config, args);
       if (!result.ok) {
         return {

@@ -50,6 +50,32 @@ function inferScmPlugin(project: {
 // ZOD SCHEMAS
 // =============================================================================
 
+/**
+ * Common validation for plugin config fields (tracker, scm, notifier).
+ * Must have either plugin (for built-ins) or package/path (for external plugins).
+ * Cannot have both package and path.
+ */
+function validatePluginConfigFields(
+  value: { plugin?: string; package?: string; path?: string },
+  ctx: z.RefinementCtx,
+  configType: string,
+): void {
+  // Must have either plugin or package/path
+  if (!value.plugin && !value.package && !value.path) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${configType} config requires either 'plugin' (for built-ins) or 'package'/'path' (for external plugins)`,
+    });
+  }
+  // Cannot have both package and path
+  if (value.package && value.path) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: `${configType} config cannot have both 'package' and 'path' - use one or the other`,
+    });
+  }
+}
+
 const ReactionConfigSchema = z.object({
   auto: z.boolean().default(true),
   action: z.enum(["send-to-agent", "notify", "auto-merge"]).default("notify"),
@@ -68,22 +94,7 @@ const TrackerConfigSchema = z
     path: z.string().optional(),
   })
   .passthrough()
-  .superRefine((value, ctx) => {
-    // Must have either plugin or package/path
-    if (!value.plugin && !value.package && !value.path) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Tracker config requires either 'plugin' (for built-ins) or 'package'/'path' (for external plugins)",
-      });
-    }
-    // Cannot have both package and path
-    if (value.package && value.path) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Tracker config cannot have both 'package' and 'path' - use one or the other",
-      });
-    }
-  });
+  .superRefine((value, ctx) => validatePluginConfigFields(value, ctx, "Tracker"));
 
 const SCMConfigSchema = z
   .object({
@@ -103,22 +114,7 @@ const SCMConfigSchema = z
       .optional(),
   })
   .passthrough()
-  .superRefine((value, ctx) => {
-    // Must have either plugin or package/path
-    if (!value.plugin && !value.package && !value.path) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "SCM config requires either 'plugin' (for built-ins) or 'package'/'path' (for external plugins)",
-      });
-    }
-    // Cannot have both package and path
-    if (value.package && value.path) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "SCM config cannot have both 'package' and 'path' - use one or the other",
-      });
-    }
-  });
+  .superRefine((value, ctx) => validatePluginConfigFields(value, ctx, "SCM"));
 
 const NotifierConfigSchema = z
   .object({
@@ -127,22 +123,7 @@ const NotifierConfigSchema = z
     path: z.string().optional(),
   })
   .passthrough()
-  .superRefine((value, ctx) => {
-    // Must have either plugin or package/path
-    if (!value.plugin && !value.package && !value.path) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Notifier config requires either 'plugin' (for built-ins) or 'package'/'path' (for external plugins)",
-      });
-    }
-    // Cannot have both package and path
-    if (value.package && value.path) {
-      ctx.addIssue({
-        code: z.ZodIssueCode.custom,
-        message: "Notifier config cannot have both 'package' and 'path' - use one or the other",
-      });
-    }
-  });
+  .superRefine((value, ctx) => validatePluginConfigFields(value, ctx, "Notifier"));
 
 const AgentPermissionSchema = z
   .enum(["permissionless", "default", "auto-edit", "suggest", "skip"])
@@ -182,20 +163,6 @@ const RoleAgentConfigSchema = z
   })
   .optional();
 
-const DecomposerConfigSchema = z
-  .object({
-    enabled: z.boolean().default(false),
-    maxDepth: z.number().min(1).max(5).default(3),
-    model: z.string().default("claude-sonnet-4-20250514"),
-    requireApproval: z.boolean().default(true),
-  })
-  .default({
-    enabled: false,
-    maxDepth: 3,
-    model: "claude-sonnet-4-20250514",
-    requireApproval: true,
-  });
-
 const ProjectConfigSchema = z.object({
   name: z.string().optional(),
   repo: z.string(),
@@ -223,7 +190,6 @@ const ProjectConfigSchema = z.object({
     .enum(["reuse", "delete", "ignore", "delete-new", "ignore-new", "kill-previous"])
     .optional(),
   opencodeIssueSessionStrategy: z.enum(["reuse", "delete", "ignore"]).optional(),
-  decomposer: DecomposerConfigSchema.optional(),
 });
 
 const DefaultPluginsSchema = z.object({
@@ -262,11 +228,23 @@ const InstalledPluginConfigSchema = z
     }
   });
 
+const PowerConfigSchema = z
+  .object({
+    /**
+     * Prevent macOS idle sleep while AO is running.
+     * Uses `caffeinate -i -w <pid>` to hold an assertion.
+     * Defaults to true on macOS, no-op on other platforms.
+     */
+    preventIdleSleep: z.boolean().default(process.platform === "darwin"),
+  })
+  .default({});
+
 const OrchestratorConfigSchema = z.object({
   port: z.number().default(3000),
   terminalPort: z.number().optional(),
   directTerminalPort: z.number().optional(),
   readyThresholdMs: z.number().nonnegative().default(300_000),
+  power: PowerConfigSchema,
   defaults: DefaultPluginsSchema.default({}),
   plugins: z.array(InstalledPluginConfigSchema).default([]),
   projects: z.record(
@@ -315,25 +293,21 @@ function expandPaths(config: OrchestratorConfig): OrchestratorConfig {
  * e.g., "my-tracker" (local path without slashes) -> "my-tracker"
  */
 function generateTempPluginName(pkg?: string, path?: string): string {
-  // Handle npm packages: extract the plugin name after the slot prefix
-  // @acme/ao-plugin-tracker-jira -> jira
-  // @acme/ao-plugin-tracker-jira-cloud -> jira-cloud (preserves multi-word names)
-  // @composio/ao-plugin-scm-gitlab -> gitlab
   if (pkg) {
-    // First get the package name without scope: "@acme/ao-plugin-tracker-jira" -> "ao-plugin-tracker-jira"
+    // Extract package name without scope: "@acme/ao-plugin-tracker-jira" -> "ao-plugin-tracker-jira"
     const slashParts = pkg.split("/");
     const packageName = slashParts[slashParts.length - 1] ?? pkg;
 
-    // Try to extract name after common prefix pattern: ao-plugin-{slot}-{name}
-    // This preserves multi-word names like "jira-cloud"
+    // Extract plugin name after ao-plugin-{slot}- prefix, preserving multi-word names like "jira-cloud"
     const prefixMatch = packageName.match(/^ao-plugin-(?:runtime|agent|workspace|tracker|scm|notifier|terminal)-(.+)$/);
     if (prefixMatch?.[1]) {
       return prefixMatch[1];
     }
 
-    // Fallback: split by hyphens and take last segment
-    const parts = packageName.split("-");
-    return parts[parts.length - 1] ?? packageName;
+    // Non-standard package name (doesn't follow ao-plugin convention): use the full package name
+    // to avoid collisions. "plugin" from "custom-tracker-plugin" would collide with other packages
+    // that also end in "-plugin". The temp name is replaced with manifest.name after loading anyway.
+    return packageName;
   }
 
   // Handle local paths: use the basename
@@ -345,6 +319,41 @@ function generateTempPluginName(pkg?: string, path?: string): string {
   }
 
   return "unknown";
+}
+
+/**
+ * Helper to process a single external plugin config entry.
+ * Expands home paths, generates temp plugin name if needed, and returns the entry ref.
+ */
+function processExternalPluginConfig(
+  pluginConfig: { plugin?: string; package?: string; path?: string },
+  source: string,
+  location: ExternalPluginEntryRef["location"],
+  slot: ExternalPluginEntryRef["slot"],
+): ExternalPluginEntryRef | null {
+  if (!pluginConfig.package && !pluginConfig.path) return null;
+
+  // Expand home paths (~/...) for consistency with config.plugins
+  if (pluginConfig.path) {
+    pluginConfig.path = expandHome(pluginConfig.path);
+  }
+
+  // Track if user explicitly specified plugin name (for validation)
+  const userSpecifiedPlugin = pluginConfig.plugin;
+
+  // If plugin name not specified, generate a temporary one from package/path
+  if (!pluginConfig.plugin) {
+    pluginConfig.plugin = generateTempPluginName(pluginConfig.package, pluginConfig.path);
+  }
+
+  return {
+    source,
+    location,
+    slot,
+    package: pluginConfig.package,
+    path: pluginConfig.path,
+    expectedPluginName: userSpecifiedPlugin,
+  };
 }
 
 /**
@@ -361,87 +370,39 @@ function generateTempPluginName(pkg?: string, path?: string): string {
 export function collectExternalPluginConfigs(config: OrchestratorConfig): ExternalPluginEntryRef[] {
   const entries: ExternalPluginEntryRef[] = [];
 
-  // Collect from project tracker configs
+  // Collect from project tracker and scm configs
   for (const [projectId, project] of Object.entries(config.projects)) {
-    if (project.tracker && (project.tracker.package || project.tracker.path)) {
-      // Expand home paths (~/...) for consistency with config.plugins
-      if (project.tracker.path) {
-        project.tracker.path = expandHome(project.tracker.path);
-      }
-
-      // Track if user explicitly specified plugin name (for validation)
-      const userSpecifiedPlugin = project.tracker.plugin;
-
-      // If plugin name not specified, generate a temporary one from package/path
-      if (!project.tracker.plugin) {
-        project.tracker.plugin = generateTempPluginName(
-          project.tracker.package,
-          project.tracker.path,
-        );
-      }
-      entries.push({
-        source: `projects.${projectId}.tracker`,
-        location: { kind: "project", projectId, configType: "tracker" },
-        slot: "tracker",
-        package: project.tracker.package,
-        path: project.tracker.path,
-        // Only validate manifest.name when user explicitly specified plugin
-        expectedPluginName: userSpecifiedPlugin,
-      });
+    if (project.tracker) {
+      const entry = processExternalPluginConfig(
+        project.tracker,
+        `projects.${projectId}.tracker`,
+        { kind: "project", projectId, configType: "tracker" },
+        "tracker",
+      );
+      if (entry) entries.push(entry);
     }
 
-    if (project.scm && (project.scm.package || project.scm.path)) {
-      // Expand home paths (~/...) for consistency with config.plugins
-      if (project.scm.path) {
-        project.scm.path = expandHome(project.scm.path);
-      }
-
-      // Track if user explicitly specified plugin name (for validation)
-      const userSpecifiedPlugin = project.scm.plugin;
-
-      // If plugin name not specified, generate a temporary one from package/path
-      if (!project.scm.plugin) {
-        project.scm.plugin = generateTempPluginName(project.scm.package, project.scm.path);
-      }
-      entries.push({
-        source: `projects.${projectId}.scm`,
-        location: { kind: "project", projectId, configType: "scm" },
-        slot: "scm",
-        package: project.scm.package,
-        path: project.scm.path,
-        // Only validate manifest.name when user explicitly specified plugin
-        expectedPluginName: userSpecifiedPlugin,
-      });
+    if (project.scm) {
+      const entry = processExternalPluginConfig(
+        project.scm,
+        `projects.${projectId}.scm`,
+        { kind: "project", projectId, configType: "scm" },
+        "scm",
+      );
+      if (entry) entries.push(entry);
     }
   }
 
   // Collect from global notifier configs
   for (const [notifierId, notifierConfig] of Object.entries(config.notifiers ?? {})) {
-    if (notifierConfig && (notifierConfig.package || notifierConfig.path)) {
-      // Expand home paths (~/...) for consistency with config.plugins
-      if (notifierConfig.path) {
-        notifierConfig.path = expandHome(notifierConfig.path);
-      }
-
-      // Track if user explicitly specified plugin name (for validation)
-      const userSpecifiedPlugin = notifierConfig.plugin;
-
-      // If plugin name not specified, generate a temporary one from package/path
-      if (!notifierConfig.plugin) {
-        notifierConfig.plugin = generateTempPluginName(
-          notifierConfig.package,
-          notifierConfig.path,
-        );
-      }
-      entries.push({
-        source: `notifiers.${notifierId}`,
-        location: { kind: "notifier", notifierId },
-        slot: "notifier",
-        package: notifierConfig.package,
-        path: notifierConfig.path,
-        // Only validate manifest.name when user explicitly specified plugin
-        expectedPluginName: userSpecifiedPlugin,
-      });
+    if (notifierConfig) {
+      const entry = processExternalPluginConfig(
+        notifierConfig,
+        `notifiers.${notifierId}`,
+        { kind: "notifier", notifierId },
+        "notifier",
+      );
+      if (entry) entries.push(entry);
     }
   }
 
@@ -465,14 +426,25 @@ function mergeExternalPlugins(
     if (plugin.path) seen.add(`path:${plugin.path}`);
   }
 
-  // Add external entries that aren't already present
+  // Add external entries that aren't already present, or enable if disabled
   for (const entry of externalEntries) {
     const key = entry.package ? `package:${entry.package}` : `path:${entry.path}`;
-    if (seen.has(key)) continue;
+    if (seen.has(key)) {
+      // If the existing plugin is disabled but there's an inline reference, enable it
+      const existingPlugin = plugins.find(
+        (p) =>
+          (entry.package && p.package === entry.package) ||
+          (entry.path && p.path === entry.path),
+      );
+      if (existingPlugin && existingPlugin.enabled === false) {
+        existingPlugin.enabled = true;
+      }
+      continue;
+    }
     seen.add(key);
 
     // Generate a temporary name - will be replaced with manifest.name during loading
-    const tempName = entry.expectedPluginName ?? entry.package ?? entry.path ?? "unknown";
+    const tempName = entry.expectedPluginName ?? generateTempPluginName(entry.package, entry.path);
 
     plugins.push({
       name: tempName,
