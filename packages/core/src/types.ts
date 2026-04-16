@@ -1448,6 +1448,8 @@ export interface SessionManager {
   spawnOrchestrator(config: OrchestratorSpawnConfig): Promise<Session>;
   restore(sessionId: SessionId, options?: RestoreOptions): Promise<Session>;
   list(projectId?: string): Promise<Session[]>;
+  /** Return sessions from in-memory cache. Falls back to list() on cache miss. */
+  listCached(projectId?: string): Promise<Session[]>;
   get(sessionId: SessionId): Promise<Session | null>;
   kill(sessionId: SessionId, options?: { purgeOpenCode?: boolean }): Promise<void>;
   cleanup(

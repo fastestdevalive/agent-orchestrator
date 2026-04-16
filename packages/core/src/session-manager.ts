@@ -1267,6 +1267,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       updateMetadata(sessionsDir, sessionId, session.metadata);
     }
 
+    invalidateCache();
     return session;
   }
 
@@ -1522,6 +1523,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
       throw err;
     }
 
+    invalidateCache();
     return session;
   }
 
@@ -1587,7 +1589,29 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     });
 
     const resolved = await Promise.all(tasks);
-    return resolved.filter((session): session is Session => session !== null);
+    const result = resolved.filter((session): session is Session => session !== null);
+    // Populate cache only on full (unfiltered) list calls so listCached always has the complete picture.
+    if (!projectId) {
+      _cache = { sessions: result, at: Date.now() };
+    }
+    return result;
+  }
+
+  // In-memory cache — populated by list(), served by listCached().
+  // 35s TTL: lifecycle manager polls every 30s, so the cache is always fresh.
+  // Invalidated immediately on spawn/kill so mutations are visible right away.
+  let _cache: { sessions: Session[]; at: number } | null = null;
+  const CACHE_TTL_MS = 35_000;
+
+  async function listCached(projectId?: string): Promise<Session[]> {
+    if (_cache && Date.now() - _cache.at < CACHE_TTL_MS) {
+      return projectId ? _cache.sessions.filter((s) => s.projectId === projectId) : _cache.sessions;
+    }
+    return list(projectId);
+  }
+
+  function invalidateCache(): void {
+    _cache = null;
   }
 
   async function get(sessionId: SessionId): Promise<Session | null> {
@@ -1697,6 +1721,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     if (didPurgeOpenCodeSession) {
       markArchivedOpenCodeCleanup(sessionsDir, sessionId);
     }
+    invalidateCache();
   }
 
   async function cleanup(
@@ -2763,6 +2788,7 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     killSubSession,
     restoreTerminalSubSession,
     list,
+    listCached,
     get,
     kill,
     cleanup,

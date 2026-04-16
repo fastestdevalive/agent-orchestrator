@@ -85,13 +85,27 @@ async function initServices(): Promise<Services> {
 
   const sessionManager = createSessionManager({ config, registry });
 
-  // Start the lifecycle manager — polls sessions every 30s, triggers reactions
-  // (CI failure → send fix message, review comments → forward to agent, etc.)
+  // Create lifecycle manager but defer starting it — avoids blocking
+  // the Node event loop during initial page load when multiple API
+  // routes call getServices() concurrently.
   const lifecycleManager = createLifecycleManager({ config, registry, sessionManager });
-  lifecycleManager.start(30_000);
 
   const services = { config, registry, sessionManager, lifecycleManager };
   globalForServices._aoServices = services;
+
+  // Warm the session cache once at startup — list() is slow (disk scan),
+  // but after this all /sessions/light requests will hit the in-memory cache.
+  sessionManager.list().then(() => {
+    console.log("[services] session cache warmed");
+  }).catch((err: unknown) => {
+    console.warn("[services] session cache warm failed (non-fatal):", err);
+  });
+
+  // Start polling after a short delay so the initial page load completes first
+  setTimeout(() => {
+    lifecycleManager.start(30_000);
+  }, 5_000);
+
   return services;
 }
 

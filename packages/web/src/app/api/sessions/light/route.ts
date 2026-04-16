@@ -19,11 +19,14 @@ export async function GET(request: Request) {
       projectFilter && projectFilter !== "all" && config.projects[projectFilter]
         ? projectFilter
         : undefined;
-    const coreSessions = await sessionManager.list(requestedProjectId);
+    // Use in-memory cache — avoids disk scan on every poll request.
+    // Cache is populated by list() at startup and refreshed by the lifecycle manager every 30s.
+    const allSessions = await sessionManager.listCached();
+    const coreSessions = requestedProjectId
+      ? allSessions.filter((s) => s.projectId === requestedProjectId)
+      : allSessions;
     const visibleSessions = filterProjectSessions(coreSessions, projectFilter, config.projects);
     const orchestrators = listDashboardOrchestrators(visibleSessions, config.projects);
-
-    const allSessions = requestedProjectId ? await sessionManager.list() : coreSessions;
     const workerSessions = filterWorkerSessions(coreSessions, projectFilter, config.projects);
 
     // Convert to dashboard format
