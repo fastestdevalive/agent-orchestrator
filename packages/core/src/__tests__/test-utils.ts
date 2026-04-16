@@ -355,5 +355,9 @@ export function createMockSessionManager(): SessionManager {
       githubAssigned: true,
       takenOverFrom: [],
     }),
+    createSubSession: vi.fn().mockResolvedValue({ id: "app-1-t1", parentId: "app-1", type: "terminal", tmuxName: "app-1-t1", workspacePath: "/tmp", runtimeHandle: null, alive: true }),
+    listSubSessions: vi.fn().mockResolvedValue([]),
+    killSubSession: vi.fn().mockResolvedValue(undefined),
+    restoreTerminalSubSession: vi.fn().mockResolvedValue({ id: "app-1-t1", parentId: "app-1", type: "terminal", tmuxName: "app-1-t1", workspacePath: "/tmp", runtimeHandle: null, alive: true }),
   } as SessionManager;
 }
