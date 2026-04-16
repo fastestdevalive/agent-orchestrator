@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useRouter } from "next/navigation";
 import { cn } from "@/lib/cn";
 import type { DashboardSession } from "@/lib/types";
@@ -140,7 +141,7 @@ export function SpawnSessionModal({
 
   if (!open) return null;
 
-  return (
+  return createPortal(
     <div
       className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 p-4"
       role="presentation"
@@ -257,6 +258,7 @@ export function SpawnSessionModal({
           </div>
         </form>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
