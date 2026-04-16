@@ -460,47 +460,36 @@ export default function WithSidebarLayout({ children }: { children: React.ReactN
     <MuxProvider>
     <SidebarContext.Provider value={sidebarContextValue}>
       <div className="dashboard-shell flex" style={{ height: "100dvh" }}>
-        {/* Desktop sidebar — hidden on mobile via CSS */}
-        <div className="dashboard-sidebar-desktop">
-          <div className="sidebar-column flex h-full flex-col">
-            <ProjectSidebar
-              projects={projects}
-              sessions={sessions}
-              orchestrators={orchestrators}
-              activeProjectId={activeProjectId}
-              activeSessionId={activeSessionId}
-              collapsed={sidebarCollapsed}
-              onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
-              isLoading={isLoading}
-              onSessionCreated={handleSessionCreated}
-            />
-            {sidebarCollapsed ? <TerminalsSidebarSectionCollapsed /> : <TerminalsSidebarSection />}
-          </div>
+        {/* Sidebar wrapper — CSS on .project-sidebar handles desktop/mobile via media queries */}
+        <div
+          className={cn(
+            "sidebar-wrapper flex h-full flex-col",
+            mobileSidebarOpen && "sidebar-wrapper--mobile-open",
+          )}
+        >
+          <ProjectSidebar
+            projects={projects}
+            sessions={sessions}
+            orchestrators={orchestrators}
+            activeProjectId={activeProjectId}
+            activeSessionId={activeSessionId}
+            collapsed={mobileSidebarOpen ? false : sidebarCollapsed}
+            onToggleCollapsed={() => setSidebarCollapsed((current) => !current)}
+            isLoading={isLoading}
+            onSessionCreated={handleSessionCreated}
+          />
+          {!mobileSidebarOpen && sidebarCollapsed ? <TerminalsSidebarSectionCollapsed /> : <TerminalsSidebarSection />}
         </div>
 
-        {/* Mobile sidebar overlay */}
+        {/* Mobile backdrop */}
         {mobileSidebarOpen && (
-          <div className="dashboard-sidebar-overlay" onClick={() => setMobileSidebarOpen(false)}>
-            <div className="dashboard-sidebar-mobile" onClick={(e) => e.stopPropagation()}>
-              <div className="sidebar-column flex h-full flex-col">
-                <ProjectSidebar
-                  projects={projects}
-                  sessions={sessions}
-                  orchestrators={orchestrators}
-                  activeProjectId={activeProjectId}
-                  activeSessionId={activeSessionId}
-                  collapsed={false}
-                  onToggleCollapsed={() => setMobileSidebarOpen(false)}
-                  isLoading={isLoading}
-                  onSessionCreated={handleSessionCreated}
-                />
-                <TerminalsSidebarSection />
-              </div>
-            </div>
-          </div>
+          <div
+            className="sidebar-mobile-backdrop"
+            onClick={() => setMobileSidebarOpen(false)}
+          />
         )}
 
-        <div className="min-w-0 flex-1">{children}</div>
+        <div className="dashboard-main--desktop min-w-0 flex-1">{children}</div>
 
         {/* New Terminal Modal */}
         <NewTerminalModal open={newTerminalModalOpen} onClose={() => setNewTerminalModalOpen(false)} />

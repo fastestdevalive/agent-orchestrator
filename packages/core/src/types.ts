@@ -1456,6 +1456,10 @@ export interface SessionManager {
   ): Promise<CleanupResult>;
   send(sessionId: SessionId, message: string): Promise<void>;
   claimPR(sessionId: SessionId, prRef: string, options?: ClaimPROptions): Promise<ClaimPRResult>;
+  createSubSession(sessionId: SessionId): Promise<SubSession>;
+  listSubSessions(sessionId: SessionId): Promise<SubSession[]>;
+  killSubSession(sessionId: SessionId, subSessionId: string): Promise<void>;
+  restoreTerminalSubSession(parentSessionId: SessionId, subSessionId: SessionId): Promise<SubSession>;
 }
 
 /** OpenCode-specific session manager with remap capability */

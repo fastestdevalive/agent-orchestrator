@@ -475,39 +475,23 @@ function ProjectSidebarInner({
           </span>
           {filterPopover}
         </div>
-        <div className="project-sidebar__header px-4 pb-3 pt-3">
-          <div className="project-sidebar__title-row">
-            <div>
-              <h2 className="project-sidebar__title">Portfolio</h2>
-              <p className="project-sidebar__subtitle">Live project overview.</p>
-            </div>
-            <div className="project-sidebar__badge">{projects.length}</div>
-          </div>
-          <div className="project-sidebar__summary">
-            <div className="project-sidebar__metric">
-              <span className="project-sidebar__metric-value">{totalWorkerSessions}</span>
-              <span className="project-sidebar__metric-label">active</span>
-            </div>
-            <div className="project-sidebar__metric">
-              <span
-                className="project-sidebar__metric-value"
-                style={{ color: "var(--color-status-attention)" }}
-              >
-                {reviewLoadCount}
-              </span>
-              <span className="project-sidebar__metric-label">review</span>
-            </div>
-            <div className="project-sidebar__metric">
-              <span
-                className="project-sidebar__metric-value"
-                style={{ color: "var(--color-status-error)" }}
-              >
-                {needsInputCount}
-              </span>
-              <span className="project-sidebar__metric-label">blocked</span>
-            </div>
+        <div className="px-3 pb-2 pt-2">
+          <div className="flex items-center gap-3 text-[11px] tabular-nums text-[var(--color-text-secondary)]">
+            <span>
+              <span className="font-semibold text-[var(--color-text-primary)]">{totalWorkerSessions}</span>{" "}
+              <span className="text-[var(--color-text-muted)]">active</span>
+            </span>
+            <span>
+              <span className="font-semibold" style={{ color: "var(--color-status-attention)" }}>{reviewLoadCount}</span>{" "}
+              <span className="text-[var(--color-text-muted)]">review</span>
+            </span>
+            <span>
+              <span className="font-semibold" style={{ color: "var(--color-status-error)" }}>{needsInputCount}</span>{" "}
+              <span className="text-[var(--color-text-muted)]">blocked</span>
+            </span>
           </div>
         </div>
+        <div className="mx-3 border-b border-[var(--color-border-subtle)]" />
 
         <nav className="flex-1 overflow-y-auto px-2 pb-3">
           <button
@@ -516,7 +500,7 @@ function ProjectSidebarInner({
             className={cn(
               "project-sidebar__item mb-1 flex w-full cursor-pointer items-center gap-2 px-2.5 py-[9px] text-left text-[12px] font-medium transition-colors",
               activeProjectId === undefined || activeProjectId === "all"
-                ? "project-sidebar__item--active text-[var(--color-accent)]"
+                ? "project-sidebar__item--active font-semibold text-[var(--color-text-primary)]"
                 : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
             )}
           >
@@ -532,7 +516,7 @@ function ProjectSidebarInner({
             All Projects
           </button>
 
-          <div className="project-sidebar__divider mx-2 my-2" />
+          <div className="mx-2 my-1.5 border-b border-[var(--color-border-subtle)]" />
 
           {projects.map((project) => {
             const entry = sessionsByProject.map.get(project.id);
@@ -548,7 +532,7 @@ function ProjectSidebarInner({
               : null;
 
             return (
-              <div key={project.id} className="mb-0.5">
+              <div key={project.id} className="border-b border-[var(--color-border-subtle)] py-0.5 last:border-b-0">
                 <div className="flex w-full items-center gap-0.5">
                   <button
                     type="button"
@@ -646,7 +630,7 @@ function ProjectSidebarInner({
                           className={cn(
                             "project-sidebar__session group flex w-full cursor-pointer items-start gap-2 py-[6px] pl-3 pr-2 no-underline transition-colors",
                             isSessionActive
-                              ? "project-sidebar__session--active text-[var(--color-accent)]"
+                              ? "project-sidebar__session--active font-semibold text-[var(--color-text-primary)]"
                               : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
                           )}
                         >

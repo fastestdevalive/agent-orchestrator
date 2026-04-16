@@ -715,7 +715,7 @@ export function DirectTerminalGB({
   }, [fullscreen, sessionId, resizeTerminalMux]);
 
   const accentColor =
-    variant === "orchestrator" ? "var(--color-accent-violet)" : "var(--color-accent)";
+    variant === "orchestrator" ? "var(--color-accent-violet)" : "var(--color-text-secondary)";
 
   // Local errors (e.g. xterm.js load failure) take priority over mux connection state
   const displayStatus = error ? "error" : muxStatus;

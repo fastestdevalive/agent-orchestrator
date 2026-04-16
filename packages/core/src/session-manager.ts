@@ -41,6 +41,7 @@ import {
   type PluginRegistry,
   type RuntimeHandle,
   type Issue,
+  type SubSession,
   PR_STATE,
 } from "./types.js";
 import {
@@ -52,6 +53,7 @@ import {
   deleteMetadata,
   listMetadata,
   reserveSessionId,
+  listSubSessionIds,
 } from "./metadata.js";
 import { buildPrompt } from "./prompt-builder.js";
 import {
@@ -69,6 +71,7 @@ import { isGitBranchNameSafe } from "./utils.js";
 import { resolveAgentSelection, resolveSessionRole } from "./agent-selection.js";
 
 const execFileAsync = promisify(execFile);
+const MAX_TERMINAL_SUB_SESSIONS = 5;
 const OPENCODE_DISCOVERY_TIMEOUT_MS = 10_000;
 const OPENCODE_INTERACTIVE_DISCOVERY_TIMEOUT_MS = 10_000;
 
@@ -2495,5 +2498,276 @@ export function createSessionManager(deps: SessionManagerDeps): OpenCodeSessionM
     return restoredSession;
   }
 
-  return { spawn, spawnOrchestrator, restore, list, get, kill, cleanup, send, claimPR, remap };
+  // ---------------------------------------------------------------------------
+  // Sub-session management (terminal tabs)
+  // ---------------------------------------------------------------------------
+
+  function isTerminalSubSessionId(parentId: SessionId, subId: string): boolean {
+    const prefix = `${parentId}-t`;
+    if (!subId.startsWith(prefix)) return false;
+    const suffix = subId.slice(prefix.length);
+    return /^\d+$/.test(suffix);
+  }
+
+  async function createSubSession(sessionId: SessionId): Promise<SubSession> {
+    const { raw, sessionsDir, project, projectId } = requireSessionRecord(sessionId);
+    if (raw["parent"]) {
+      throw new Error(`Cannot create sub-session of a sub-session (${sessionId})`);
+    }
+    const existing = listSubSessionIds(sessionsDir, sessionId);
+    if (existing.length >= MAX_TERMINAL_SUB_SESSIONS) {
+      throw new Error(`Maximum ${MAX_TERMINAL_SUB_SESSIONS} terminal sub-sessions per session`);
+    }
+    let nextNum = 1;
+    for (const id of existing) {
+      const m = id.match(/-t(\d+)$/);
+      if (m) {
+        const n = Number.parseInt(m[1], 10);
+        if (n >= nextNum) nextNum = n + 1;
+      }
+    }
+    const subSessionId = `${sessionId}-t${nextNum}`;
+    const parentTmuxName = raw["tmuxName"]?.trim() || sessionId;
+    const subTmuxName = `${parentTmuxName}-t${nextNum}`;
+    const workspacePath = raw["worktree"] || project.path;
+    const plugins = resolvePlugins(project);
+    if (!plugins.runtime) {
+      throw new Error(`Runtime plugin '${project.runtime ?? config.defaults.runtime}' not found`);
+    }
+
+    const handle = await plugins.runtime.create({
+      sessionId: subTmuxName,
+      workspacePath,
+      launchCommand: "",
+      environment: {
+        AO_SESSION: sessionId,
+        AO_SUB_SESSION: subSessionId,
+        AO_DATA_DIR: sessionsDir,
+        AO_CALLER_TYPE: "terminal",
+        AO_PROJECT_ID: projectId,
+        AO_CONFIG_PATH: config.configPath,
+        ...(config.port !== undefined && config.port !== null && { AO_PORT: String(config.port) }),
+      },
+    });
+
+    writeMetadata(sessionsDir, subSessionId, {
+      worktree: workspacePath,
+      branch: raw["branch"] ?? "",
+      status: "working",
+      tmuxName: subTmuxName,
+      project: raw["project"] ?? projectId,
+      createdAt: new Date().toISOString(),
+      runtimeHandle: JSON.stringify(handle),
+    });
+    updateMetadata(sessionsDir, subSessionId, {
+      parent: sessionId,
+      type: "terminal",
+    });
+
+    return {
+      id: subSessionId,
+      parentId: sessionId,
+      type: "terminal",
+      tmuxName: subTmuxName,
+      workspacePath,
+      runtimeHandle: handle,
+      alive: true,
+    };
+  }
+
+  async function listSubSessions(sessionId: SessionId): Promise<SubSession[]> {
+    const { raw, sessionsDir, project } = requireSessionRecord(sessionId);
+    if (raw["parent"]) {
+      throw new Error(`Not a top-level session: ${sessionId}`);
+    }
+    const plugins = resolvePlugins(project);
+    const runtime = plugins.runtime;
+    const workspacePath = raw["worktree"] || project.path;
+    const parentTmux = raw["tmuxName"]?.trim() || sessionId;
+
+    const aliveFor = async (
+      handleJson?: string,
+    ): Promise<{ handle: RuntimeHandle | null; alive: boolean }> => {
+      if (!handleJson || !runtime) return { handle: null, alive: false };
+      const handle = safeJsonParse<RuntimeHandle>(handleJson);
+      if (!handle) return { handle: null, alive: false };
+      try {
+        const ok = await runtime.isAlive(handle);
+        return { handle, alive: ok };
+      } catch {
+        return { handle, alive: false };
+      }
+    };
+
+    const primary = await aliveFor(raw["runtimeHandle"]);
+    const out: SubSession[] = [
+      {
+        id: sessionId,
+        parentId: sessionId,
+        type: "primary",
+        tmuxName: parentTmux,
+        workspacePath,
+        runtimeHandle: primary.handle,
+        alive: primary.alive,
+      },
+    ];
+
+    const subIds = [...listSubSessionIds(sessionsDir, sessionId)].sort((a, b) => {
+      const na = Number.parseInt(a.match(/-t(\d+)$/)?.[1] ?? "0", 10);
+      const nb = Number.parseInt(b.match(/-t(\d+)$/)?.[1] ?? "0", 10);
+      return na - nb;
+    });
+
+    for (const sid of subIds) {
+      const sr = readMetadataRaw(sessionsDir, sid);
+      if (!sr) continue;
+      const st = await aliveFor(sr["runtimeHandle"]);
+      const tm = sr["tmuxName"]?.trim() || sid;
+      out.push({
+        id: sid,
+        parentId: sessionId,
+        type: "terminal",
+        tmuxName: tm,
+        workspacePath: sr["worktree"] || workspacePath,
+        runtimeHandle: st.handle,
+        alive: st.alive,
+      });
+    }
+    return out;
+  }
+
+  async function killSubSession(sessionId: SessionId, subSessionId: string): Promise<void> {
+    if (subSessionId === sessionId) {
+      throw new Error(
+        "Cannot kill the primary sub-session with killSubSession; use session kill for the AO session",
+      );
+    }
+    if (!isTerminalSubSessionId(sessionId, subSessionId)) {
+      throw new Error(`Invalid sub-session id: ${subSessionId}`);
+    }
+    const { sessionsDir, project } = requireSessionRecord(sessionId);
+    const subRaw = readMetadataRaw(sessionsDir, subSessionId);
+    if (!subRaw || subRaw["parent"] !== sessionId) {
+      throw new SessionNotFoundError(subSessionId);
+    }
+    const plugins = resolvePlugins(project);
+    if (subRaw["runtimeHandle"]) {
+      const h = safeJsonParse<RuntimeHandle>(subRaw["runtimeHandle"]);
+      if (h && plugins.runtime) {
+        try {
+          await plugins.runtime.destroy(h);
+        } catch {
+          void 0;
+        }
+      }
+    }
+    deleteMetadata(sessionsDir, subSessionId, true);
+  }
+
+  async function restoreTerminalSubSession(
+    parentSessionId: SessionId,
+    subSessionId: SessionId,
+  ): Promise<SubSession> {
+    const parent = requireSessionRecord(parentSessionId);
+    if (parent.raw["parent"]) {
+      throw new Error(`Not a top-level session: ${parentSessionId}`);
+    }
+    const { sessionsDir, project, projectId } = parent;
+    const subRaw = readMetadataRaw(sessionsDir, subSessionId);
+    if (
+      !subRaw ||
+      subRaw["parent"] !== parentSessionId ||
+      subRaw["type"] !== "terminal"
+    ) {
+      throw new SessionNotFoundError(subSessionId);
+    }
+    const plugins = resolvePlugins(project);
+    if (!plugins.runtime) {
+      throw new Error(`Runtime plugin '${project.runtime ?? config.defaults.runtime}' not found`);
+    }
+
+    const workspacePath = subRaw["worktree"] || parent.raw["worktree"] || project.path;
+    const subTmuxName = subRaw["tmuxName"]?.trim();
+    if (!subTmuxName) {
+      throw new Error(`Missing tmuxName for ${subSessionId}`);
+    }
+
+    let oldHandle: RuntimeHandle | null = null;
+    if (subRaw["runtimeHandle"]) {
+      oldHandle = safeJsonParse<RuntimeHandle>(subRaw["runtimeHandle"]);
+    }
+
+    if (oldHandle && plugins.runtime.isAlive) {
+      try {
+        if (await plugins.runtime.isAlive(oldHandle)) {
+          return {
+            id: subSessionId,
+            parentId: parentSessionId,
+            type: "terminal",
+            tmuxName: subTmuxName,
+            workspacePath,
+            runtimeHandle: oldHandle,
+            alive: true,
+          };
+        }
+      } catch {
+        void 0;
+      }
+    }
+
+    if (oldHandle) {
+      try {
+        await plugins.runtime.destroy(oldHandle);
+      } catch {
+        void 0;
+      }
+    }
+
+    const handle = await plugins.runtime.create({
+      sessionId: subTmuxName,
+      workspacePath,
+      launchCommand: "",
+      environment: {
+        AO_SESSION: parentSessionId,
+        AO_SUB_SESSION: subSessionId,
+        AO_DATA_DIR: sessionsDir,
+        AO_CALLER_TYPE: "terminal",
+        AO_PROJECT_ID: projectId,
+        AO_CONFIG_PATH: config.configPath,
+        ...(config.port !== undefined && config.port !== null && { AO_PORT: String(config.port) }),
+      },
+    });
+
+    updateMetadata(sessionsDir, subSessionId, {
+      status: "working",
+      runtimeHandle: JSON.stringify(handle),
+    });
+
+    return {
+      id: subSessionId,
+      parentId: parentSessionId,
+      type: "terminal",
+      tmuxName: subTmuxName,
+      workspacePath,
+      runtimeHandle: handle,
+      alive: true,
+    };
+  }
+
+  return {
+    spawn,
+    spawnOrchestrator,
+    restore,
+    createSubSession,
+    listSubSessions,
+    killSubSession,
+    restoreTerminalSubSession,
+    list,
+    get,
+    kill,
+    cleanup,
+    send,
+    claimPR,
+    remap,
+  };
 }

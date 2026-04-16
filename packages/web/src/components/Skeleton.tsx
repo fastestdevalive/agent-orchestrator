@@ -2,7 +2,7 @@
 
 export function TerminalSkeleton() {
   return (
-    <div className="flex h-full w-full flex-col bg-[#0a0a0f] p-4 font-mono text-sm">
+    <div className="flex h-full w-full flex-col bg-[var(--color-bg-base)] p-4 font-mono text-sm">
       <div className="space-y-3">
         <div className="flex items-center gap-2">
           <div className="h-3 w-16 animate-pulse rounded bg-[var(--color-accent)]/20" />
