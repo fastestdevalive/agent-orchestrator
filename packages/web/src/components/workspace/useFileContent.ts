@@ -109,8 +109,11 @@ export function useFileContent(sessionId: string, filePath: string | null) {
 
     void fetchFileContent();
 
+    let polling = false;
     intervalRef.current = setInterval(() => {
-      void fetchFileContent();
+      if (polling) return;
+      polling = true;
+      void fetchFileContent().finally(() => { polling = false; });
     }, 5000);
 
     return () => {

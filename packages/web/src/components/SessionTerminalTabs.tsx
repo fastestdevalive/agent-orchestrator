@@ -106,9 +106,13 @@ export function SessionTerminalTabs({
   }, [sessionId]);
 
   // Poll every 3s to detect dead terminals and prune them.
+  // Skips if the previous poll is still in-flight.
   useEffect(() => {
+    let polling = false;
     const interval = window.setInterval(() => {
-      void loadSubs();
+      if (polling) return;
+      polling = true;
+      void loadSubs().finally(() => { polling = false; });
     }, 3000);
     return () => window.clearInterval(interval);
   }, [loadSubs]);

@@ -109,8 +109,11 @@ export default function SessionPage() {
 
   useEffect(() => {
     void fetchSession();
+    let polling = false;
     const interval = setInterval(() => {
-      void fetchSession();
+      if (polling) return;
+      polling = true;
+      void fetchSession().finally(() => { polling = false; });
     }, 10_000);
     return () => clearInterval(interval);
   }, [fetchSession]);

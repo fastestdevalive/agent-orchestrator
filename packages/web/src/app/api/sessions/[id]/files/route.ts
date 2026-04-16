@@ -5,6 +5,10 @@ import { readdirSync } from "node:fs";
 import { join, relative } from "node:path";
 import { execSync } from "node:child_process";
 
+// Cache session workspace paths (same as file content route)
+const workspaceCache = new Map<string, { path: string; expiresAt: number }>();
+const WORKSPACE_CACHE_TTL = 60_000;
+
 export interface FileNode {
   name: string;
   path: string;
@@ -80,18 +84,29 @@ export async function GET(
   const correlationId = getCorrelationId(request);
   try {
     const { id } = await params;
-    const { sessionManager } = await getServices();
-    const session = await sessionManager.get(id);
 
-    if (!session) {
-      return jsonWithCorrelation(
-        { error: "Session not found" },
-        { status: 404 },
-        correlationId
-      );
+    let worktreePath: string | undefined;
+    const cached = workspaceCache.get(id);
+    if (cached && cached.expiresAt > Date.now()) {
+      worktreePath = cached.path;
+    } else {
+      const { sessionManager } = await getServices();
+      const session = await sessionManager.get(id);
+
+      if (!session) {
+        return jsonWithCorrelation(
+          { error: "Session not found" },
+          { status: 404 },
+          correlationId
+        );
+      }
+
+      worktreePath = session.workspacePath ?? undefined;
+      if (worktreePath) {
+        workspaceCache.set(id, { path: worktreePath, expiresAt: Date.now() + WORKSPACE_CACHE_TTL });
+      }
     }
 
-    const worktreePath = session.workspacePath;
     if (!worktreePath) {
       return jsonWithCorrelation(
         { error: "Session has no workspace" },

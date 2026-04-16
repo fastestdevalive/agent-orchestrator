@@ -540,8 +540,8 @@ function ProjectSidebarInner({
                     className={cn(
                       "project-sidebar__item flex min-w-0 flex-1 cursor-pointer items-center gap-2 px-2.5 py-[9px] text-left text-[12px] font-medium transition-colors",
                       isActive
-                        ? "project-sidebar__item--active text-[var(--color-accent)]"
-                        : "text-[var(--color-text-secondary)] hover:text-[var(--color-text-primary)]",
+                        ? "project-sidebar__item--active font-semibold text-[var(--color-text-primary)]"
+                        : "text-[var(--color-text-muted)] hover:text-[var(--color-text-secondary)]",
                     )}
                   >
                     <svg
@@ -628,10 +628,10 @@ function ProjectSidebarInner({
                             router.push(sessionHref);
                           }}
                           className={cn(
-                            "project-sidebar__session group flex w-full cursor-pointer items-start gap-2 py-[6px] pl-3 pr-2 no-underline transition-colors",
+                            "project-sidebar__session group flex w-full cursor-pointer items-start gap-2 rounded py-[6px] pl-3 pr-2 no-underline transition-colors",
                             isSessionActive
-                              ? "project-sidebar__session--active font-semibold text-[var(--color-text-primary)]"
-                              : "text-[var(--color-text-tertiary)] hover:text-[var(--color-text-secondary)]",
+                              ? "project-sidebar__session--active font-semibold text-[var(--color-text-primary)] bg-[var(--sidebar-row-active)]"
+                              : "text-[var(--color-text-muted)] opacity-70 hover:opacity-100 hover:text-[var(--color-text-secondary)] hover:bg-[var(--sidebar-row-hover)]",
                           )}
                         >
                           <SessionDot level={level} />

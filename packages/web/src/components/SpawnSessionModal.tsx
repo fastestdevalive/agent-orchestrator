@@ -121,16 +121,18 @@ export function SpawnSessionModal({
           body: JSON.stringify(body),
         });
         const data = (await res.json().catch(() => null)) as
-          | { session?: { id: string }; error?: string }
+          | { session?: DashboardSession; error?: string }
           | null;
         if (!res.ok) {
           console.error("[SpawnSession] Spawn failed:", data?.error ?? `HTTP ${res.status}`);
           return;
         }
-        const realId = data?.session?.id;
-        if (realId) {
-          onSpawned?.(realId);
-          router.push(`/sessions/${encodeURIComponent(realId)}?project=${encodeURIComponent(projectId)}`);
+        const realSession = data?.session;
+        if (realSession?.id) {
+          // Replace the optimistic stub with the real session
+          onSessionCreated?.(realSession);
+          onSpawned?.(realSession.id);
+          router.push(`/sessions/${encodeURIComponent(realSession.id)}?project=${encodeURIComponent(projectId)}`);
         }
       } catch (err) {
         console.error("[SpawnSession] Spawn error:", err);

@@ -2,7 +2,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { usePathname, useSearchParams, useRouter } from "next/navigation";
-import { MuxProvider } from "@/providers/MuxProvider";
 import { ProjectSidebar } from "@/components/ProjectSidebar";
 import { SidebarContext } from "@/components/workspace/SidebarContext";
 import { NewTerminalModal } from "@/components/NewTerminalModal";
@@ -60,10 +59,14 @@ export default function WithSidebarLayout({ children }: { children: React.ReactN
   // Dedicated fast poll for global terminals so dead tmux sessions vanish
   // from the sidebar within ~3s (the big sidebar poll runs every 30s).
   // Dead terminals are auto-removed from the registry (and the UI).
+  // Skips if the previous poll is still in-flight.
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
 
     async function refreshTerminals(): Promise<void> {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const res = await fetch("/api/terminals");
         if (!res.ok || cancelled) return;
@@ -83,15 +86,15 @@ export default function WithSidebarLayout({ children }: { children: React.ReactN
         for (const termId of toDelete) {
           pruningTerminalsRef.current.add(termId);
           void fetch(`/api/terminals/${encodeURIComponent(termId)}`, { method: "DELETE" })
-            .catch(() => {
-              // Best-effort; next poll retries.
-            })
+            .catch(() => {})
             .finally(() => {
               pruningTerminalsRef.current.delete(termId);
             });
         }
       } catch {
         // Ignore; next poll will retry.
+      } finally {
+        inFlight = false;
       }
     }
 
@@ -115,56 +118,53 @@ export default function WithSidebarLayout({ children }: { children: React.ReactN
 
   useEffect(() => {
     let cancelled = false;
+    let inFlight = false;
 
     async function loadSidebarData(): Promise<void> {
-      const results = await Promise.allSettled([
-        fetch("/api/projects"),
-        fetch("/api/sessions/light"),
-        fetch("/api/terminals"),
-      ]);
+      if (inFlight) return;
+      inFlight = true;
 
-      const [projectsResult, sessionsResult, terminalsResult] = results;
-
-      if (!cancelled && projectsResult.status === "fulfilled" && projectsResult.value.ok) {
-        const data = (await projectsResult.value.json()) as { projects?: ProjectInfo[] };
-        setProjects(data.projects ?? []);
+      const markLoaded = () => {
         if (!hasLoadedOnce.current) {
           hasLoadedOnce.current = true;
           setIsLoading(false);
         }
-      }
+      };
 
-      if (!cancelled && sessionsResult.status === "fulfilled" && sessionsResult.value.ok) {
-        const data = (await sessionsResult.value.json()) as {
-          sessions?: DashboardSession[];
-          orchestrators?: DashboardOrchestratorLink[];
-        };
-        setSessions(data.sessions ?? []);
-        setOrchestrators(data.orchestrators ?? []);
-        if (!hasLoadedOnce.current) {
-          hasLoadedOnce.current = true;
-          setIsLoading(false);
-        }
-      }
+      try {
+        // Fire independently — each updates state as soon as it resolves.
+        // Terminals are polled by the dedicated 3s loop — don't fetch here.
+        const projectsPromise = fetch("/api/projects")
+          .then(async (res) => {
+            if (cancelled || !res.ok) return;
+            const data = (await res.json()) as { projects?: ProjectInfo[] };
+            setProjects(data.projects ?? []);
+            markLoaded();
+          })
+          .catch(() => {});
 
-      if (!cancelled && terminalsResult.status === "fulfilled" && terminalsResult.value.ok) {
-        const data = (await terminalsResult.value.json()) as { terminals?: TerminalWithAlive[] };
-        setTerminals(data.terminals ?? []);
-        if (!hasLoadedOnce.current) {
-          hasLoadedOnce.current = true;
-          setIsLoading(false);
-        }
-      }
+        const sessionsPromise = fetch("/api/sessions/light")
+          .then(async (res) => {
+            if (cancelled || !res.ok) return;
+            const data = (await res.json()) as {
+              sessions?: DashboardSession[];
+              orchestrators?: DashboardOrchestratorLink[];
+            };
+            setSessions(data.sessions ?? []);
+            setOrchestrators(data.orchestrators ?? []);
+            markLoaded();
+          })
+          .catch(() => {});
 
-      // If all failed and we haven't loaded yet, still clear loading state
-      if (!hasLoadedOnce.current && results.every((r) => r.status === "rejected")) {
-        hasLoadedOnce.current = true;
-        setIsLoading(false);
+        await Promise.allSettled([projectsPromise, sessionsPromise]);
+        markLoaded();
+      } finally {
+        inFlight = false;
       }
     }
 
     void loadSidebarData();
-    const intervalId = setInterval(loadSidebarData, 30_000);
+    const intervalId = setInterval(() => void loadSidebarData(), 30_000);
 
     const handleVisibility = () => {
       if (document.visibilityState === "visible") {
@@ -290,8 +290,16 @@ export default function WithSidebarLayout({ children }: { children: React.ReactN
     onToggleSidebar: toggleSidebar,
   }), [toggleSidebar]);
 
-  const handleSessionCreated = useCallback((stub: DashboardSession) => {
-    setSessions((prev) => [stub, ...prev]);
+  const handleSessionCreated = useCallback((session: DashboardSession) => {
+    setSessions((prev) => {
+      // Remove any optimistic stubs (spawning-*) for the same project
+      const filtered = prev.filter(
+        (s) => !(s.id.startsWith("spawning-") && s.projectId === session.projectId),
+      );
+      // If the real session already exists (from a poll), replace it; otherwise prepend
+      const exists = filtered.some((s) => s.id === session.id);
+      return exists ? filtered.map((s) => (s.id === session.id ? session : s)) : [session, ...filtered];
+    });
   }, []);
 
   const removeTerminal = useCallback(async (id: string) => {
@@ -457,7 +465,6 @@ export default function WithSidebarLayout({ children }: { children: React.ReactN
   );
 
   return (
-    <MuxProvider>
     <SidebarContext.Provider value={sidebarContextValue}>
       <div className="dashboard-shell flex" style={{ height: "100dvh" }}>
         {/* Sidebar wrapper — CSS on .project-sidebar handles desktop/mobile via media queries */}
@@ -498,6 +505,5 @@ export default function WithSidebarLayout({ children }: { children: React.ReactN
         <ReconnectingPill />
       </div>
     </SidebarContext.Provider>
-    </MuxProvider>
   );
 }

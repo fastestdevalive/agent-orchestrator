@@ -6,6 +6,9 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 
+const workspaceCache = new Map<string, { path: string; expiresAt: number }>();
+const WORKSPACE_CACHE_TTL = 60_000;
+
 const MAX_DIFF_BYTES = 512 * 1024; // 500KB cap (binary KB)
 const MAX_UNTRACKED_READ = 1_048_576; // 1MB — align with file content route
 
@@ -71,14 +74,24 @@ export async function GET(
       return jsonWithCorrelation({ error: "Invalid path" }, { status: 400 }, correlationId);
     }
 
-    const { sessionManager } = await getServices();
-    const session = await sessionManager.get(id);
+    let worktreePath: string | undefined;
+    const cached = workspaceCache.get(id);
+    if (cached && cached.expiresAt > Date.now()) {
+      worktreePath = cached.path;
+    } else {
+      const { sessionManager } = await getServices();
+      const session = await sessionManager.get(id);
 
-    if (!session) {
-      return jsonWithCorrelation({ error: "Session not found" }, { status: 404 }, correlationId);
+      if (!session) {
+        return jsonWithCorrelation({ error: "Session not found" }, { status: 404 }, correlationId);
+      }
+
+      worktreePath = session.workspacePath ?? undefined;
+      if (worktreePath) {
+        workspaceCache.set(id, { path: worktreePath, expiresAt: Date.now() + WORKSPACE_CACHE_TTL });
+      }
     }
 
-    const worktreePath = session.workspacePath;
     if (!worktreePath) {
       return jsonWithCorrelation(
         { error: "Session has no workspace" },

@@ -3157,7 +3157,6 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
   background: var(--sidebar-bg);
   color: var(--color-text-primary);
   overflow: hidden;
-  width: 244px;
 }
 
 /* Reset link color inside sidebar and dashboard cards — inherit from parent */
@@ -3178,13 +3177,9 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
 
 /* Inside .sidebar-wrapper, the .project-sidebar fills its parent naturally */
 .sidebar-wrapper .project-sidebar {
-  width: 100%;
   height: auto;
   min-height: 0;
   flex: 1;
-}
-.sidebar-wrapper .project-sidebar--collapsed {
-  width: 100%;
 }
 
 @media (max-width: 767px) {
@@ -3212,9 +3207,9 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
   --sidebar-row-active: rgba(255, 240, 220, 0.07);
 }
 
-/* Collapsed sidebar: show narrow avatar column (gb-personal) */
+/* Collapsed sidebar: show narrow avatar column (gb-personal).
+   Width is set by Tailwind w-[56px] on the element. */
 .project-sidebar--collapsed {
-  width: 56px;
   border-right: 1px solid var(--sidebar-border);
 }
 

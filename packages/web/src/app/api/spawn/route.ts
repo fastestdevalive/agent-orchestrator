@@ -57,10 +57,13 @@ export async function POST(request: NextRequest) {
     const rawPrompt = (body.prompt as string) ?? undefined;
     const prompt = rawPrompt ? rawPrompt.replace(/[\r\n]/g, " ").trim() : undefined;
 
+    const agent = typeof body.agent === "string" ? body.agent.trim() : undefined;
+
     const session = await sessionManager.spawn({
       projectId,
       issueId: (body.issueId as string) ?? undefined,
       prompt: prompt || undefined,
+      agent: agent || undefined,
     });
 
     recordApiObservation({

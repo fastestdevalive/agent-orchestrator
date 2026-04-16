@@ -37,10 +37,13 @@ export function useFileTree(sessionId: string) {
     fetchFileTree();
   }, [fetchFileTree]);
 
-  // Poll for updates every 5 seconds
+  // Poll for updates every 5 seconds (skips if previous fetch still in-flight)
   useEffect(() => {
+    let polling = false;
     const interval = setInterval(() => {
-      fetchFileTree();
+      if (polling) return;
+      polling = true;
+      void Promise.resolve(fetchFileTree()).finally(() => { polling = false; });
     }, 5000);
     return () => clearInterval(interval);
   }, [fetchFileTree]);

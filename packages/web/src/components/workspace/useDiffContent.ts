@@ -102,8 +102,11 @@ export function useDiffContent(sessionId: string, filePath: string | null) {
 
     setState({ data: null, error: null, loading: true });
     void fetchDiff();
+    let polling = false;
     intervalRef.current = setInterval(() => {
-      void fetchDiff();
+      if (polling) return;
+      polling = true;
+      void fetchDiff().finally(() => { polling = false; });
     }, 5000);
 
     return () => {

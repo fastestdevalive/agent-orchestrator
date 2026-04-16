@@ -43,10 +43,13 @@ export default function WorkspacePage() {
     fetchSession();
   }, [fetchSession]);
 
-  // Poll for updates every 5 seconds
+  // Poll for updates every 5 seconds (skips if previous fetch still in-flight)
   useEffect(() => {
+    let polling = false;
     const interval = setInterval(() => {
-      fetchSession();
+      if (polling) return;
+      polling = true;
+      void Promise.resolve(fetchSession()).finally(() => { polling = false; });
     }, 5000);
     return () => clearInterval(interval);
   }, [fetchSession]);
