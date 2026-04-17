@@ -8,10 +8,10 @@
 
 ## Context & Strategy
 
-gb-personal contains ~393 commits ahead of upstream `main`. Rather than a bulk merge,
-we upstream in 8 focused PRs. Each PR targets one feature area, uses the **latest**
-gb-personal code as source, and integrates cleanly into upstream components
-(not adding parallel "GB variants").
+- gb-personal is ~393 commits ahead of upstream `main`
+- Upstream in 8 focused PRs, each one feature area, latest gb-personal code as source
+- Integrate into upstream components in-place (no parallel "GB variants")
+- See `subsession-concept.md` (sibling file) for the conceptual model used by PR7
 
 **GB variant components that must be merged into their upstream counterparts and deleted:**
 - `DashboardGB.tsx` → merged into `Dashboard.tsx`
@@ -26,7 +26,23 @@ gb-personal code as source, and integrates cleanly into upstream components
 - Change ALL `@aoagents/ao-core` imports → `@composio/ao-core` before committing
 
 **Before every PR push:** `pnpm install && pnpm build && pnpm typecheck && pnpm lint && pnpm test`
-Note: `pnpm install` regenerates `pnpm-lock.yaml` whenever deps change (PR1, PR6a, PR6b).
+- `pnpm install` regenerates `pnpm-lock.yaml` whenever deps change (PR1, PR6a, PR6b)
+
+**Upstream layout structure (IMPORTANT):**
+- Upstream has NO `(with-sidebar)` route group. All layout changes go to `packages/web/src/app/layout.tsx`
+- Pages live at `app/page.tsx`, `app/sessions/[id]/page.tsx` — no nested route groups
+- Do NOT create or reference `app/(with-sidebar)/` paths in any PR
+- Sidebar + topbar are rendered **inside** `Dashboard.tsx` and `SessionDetail.tsx` (not in `layout.tsx`)
+- Each "page-shell" component owns its own `<header className="dashboard-app-header">` + `<div className="dashboard-shell">` + `<ProjectSidebar>` wrapper
+- See `feat/upstream-pr2-pr3` branch for the canonical post-PR2/PR3 layout
+
+**Branch already merged (must not be re-included in any new PR):**
+- `feat/upstream-pr2-pr3` — already covers PR2 + PR3 (terminal layout, topbar, sidebar, hamburger, ReconnectingPill, SidebarContext, ProjectSidebar mobile overlay, dashboard-app-shell CSS)
+- All later PRs should **diff against PR2/PR3 head**, not raw upstream `main`, when reasoning about layout
+
+**Upstream package names:**
+- Core package is `@aoagents/ao-core` on upstream (NOT `@composio/ao-core`) — do not rename existing imports
+- xterm package is `xterm` (NOT `@xterm/xterm`) — use `import type { Terminal } from "xterm"` in new files
 
 **Cross-cutting constraints:**
 - C-01: No new UI component libraries (no Radix, shadcn, etc.)
@@ -140,8 +156,8 @@ The fix is to make the terminal and its containing layout use full viewport heig
 - Translates Y-delta to `terminal.scrollLines(n)`
 - Returns cleanup function removing all listeners
 
-**Layout height fix (in `with-sidebar` layout + session page):**
-- Layout must be `h-screen overflow-hidden` at root
+**Layout height fix (in root layout + session page):**
+- Layout must be `h-screen overflow-hidden` at root (`app/layout.tsx` body tag)
 - Sidebar: `h-full overflow-y-auto` (scrolls independently)
 - Dashboard kanban board: `overflow-y-auto` in its container (scrolls independently)
 - Session page: `h-full flex flex-col` so terminal can grow to fill remaining height
@@ -152,11 +168,10 @@ The fix is to make the terminal and its containing layout use full viewport heig
 **Commit 1:** `feat(web): fix terminal height to fill viewport, prevent outside scrolling`
 
 Files to modify:
-- `packages/web/src/app/(with-sidebar)/layout.tsx`
-  - Root wrapper: add `h-screen overflow-hidden` (or verify already present)
-  - Sidebar column: `h-full overflow-y-auto`
-  - Main content area: `h-full overflow-hidden` (no outer scroll)
-- `packages/web/src/app/(with-sidebar)/sessions/[id]/page.tsx`
+- `packages/web/src/app/layout.tsx`
+  - `<body>` element: add `h-screen overflow-hidden` (alongside existing classes)
+  - Main content wrapper (if any): `h-full overflow-hidden`
+- `packages/web/src/app/sessions/[id]/page.tsx`
   - Page wrapper: `h-full flex flex-col`
   - Terminal section: `flex-1 min-h-0` (grows to fill, doesn't overflow)
 - `packages/web/src/components/Dashboard.tsx`
@@ -301,7 +316,7 @@ Files to modify:
   - Add 2 action buttons per project row: Spawn button (opens modal) + settings icon
 - `packages/web/src/app/globals.css`
   - Add `.sidebar-wrapper` off-canvas CSS (copy from gb-personal)
-- `packages/web/src/app/(with-sidebar)/layout.tsx`
+- `packages/web/src/app/layout.tsx` (upstream's root layout — no route groups)
   - Add `mobileSidebarOpen` state
   - Wrap in `SidebarContext.Provider` with `{ onToggleSidebar }`
   - Pass `mobileOpen`, `onMobileClose` to `ProjectSidebar`
@@ -335,6 +350,13 @@ Files to create:
 - Each project row has Spawn + settings buttons
 - Session rows show `ao-abc123` beneath session title
 - WebSocket disconnect → ReconnectingPill appears in topbar
+
+### Known issues observed during testing (fix before merge)
+
+- **Mobile session page: back button instead of hamburger** — upstream renders a "back" button on the session page on mobile. Replace with the hamburger/sidebar toggle button matching gb-personal behavior, and animate the sidebar slide-in on mobile (off-canvas with CSS transition).
+- **Session prefix collision** — sessions from different AO projects (e.g. `ao-` and `unl-`) collapse under a single project because the prefix matching logic groups them incorrectly. Check `Dashboard.tsx` / `ProjectSidebar.tsx` project grouping logic against gb-personal.
+- **Terminal blank on session open** — terminal pane renders blank when navigating to a session. Likely a timing issue with the WebSocket connection or fit call before the container is visible. Check `DirectTerminal.tsx` initialization sequence and ensure fit is called after the element is visible (ResizeObserver or `useLayoutEffect`).
+- **`/sessions?project=...` calls canceled** — many SSE/fetch calls to the sessions endpoint are being aborted. Check `useSessionEvents` hook abort controller logic and whether upstream's polling is compatible with the current server.
 
 ---
 
@@ -429,9 +451,10 @@ Files to create:
   - Test: shows success state after save
 
 Files to modify:
-- `packages/web/src/app/(with-sidebar)/layout.tsx` or topbar
-  - Add "Prompt Settings" button/link in topbar (gear icon or "Settings" label)
-  - Renders `<PromptSettingsPanel>` in a slide-out panel or modal
+- `packages/web/src/components/Dashboard.tsx` AND `packages/web/src/components/SessionDetail.tsx`
+  - Add "Prompt Settings" button (gear icon) inside the existing `<header className="dashboard-app-header">` (right side, alongside the existing PR / Kill / Orchestrator buttons)
+  - Both components own their own header copy on `feat/upstream-pr2-pr3` — add the button to both
+  - Clicking it renders `<PromptSettingsPanel>` in a slide-out panel or modal portaled to `document.body`
 - `packages/web/src/lib/services.ts`
   - Load `prompt-settings.json` at startup, pass `PromptOverrides` to `promptBuilder`
   - On each spawn: read latest settings and include in prompt assembly
@@ -534,134 +557,7 @@ Files to create:
 
 ---
 
-## PR 5 — Sub-Sessions + Backend Support
-
-**Branch:** `feat/upstream-sub-sessions`
-**Upstream base:** `main`
-**No dependencies on other PRs** (self-contained; session detail page exists on upstream)
-
-### What exists in gb-personal
-
-**Core types (`types.ts` lines 232–246):**
-```typescript
-interface SubSession {
-  id: string;
-  parentId: SessionId;
-  type: "primary" | "terminal";
-  tmuxName: string;
-  workspacePath: string;
-  runtimeHandle: RuntimeHandle | null;
-  alive: boolean;
-}
-```
-
-**`SessionManager` interface additions:**
-```typescript
-createSubSession(sessionId: SessionId): Promise<SubSession>
-listSubSessions(sessionId: SessionId): Promise<SubSession[]>
-killSubSession(sessionId: SessionId, subSessionId: string): Promise<void>
-restoreTerminalSubSession(parentSessionId: SessionId, subSessionId: SessionId): Promise<SubSession>
-```
-
-**API routes (in `app/api/sessions/[id]/sub-sessions/`):**
-- `route.ts`: GET list → `{ subSessions }`, POST create → `{ subSession }` (201)
-- `[subId]/route.ts`: DELETE kill
-- `[subId]/restore/route.ts`: POST restore → `{ subSession }`
-
-**`SessionTerminalTabs.tsx` (335 lines) — critical import fix:**
-- In gb-personal this imports `DirectTerminalGB as DirectTerminal`
-- For upstream: change import to `import { DirectTerminal } from "@/components/DirectTerminal"`
-- All other logic is unchanged
-
-**`sessionTerminalTabState.ts`:**
-- Key: `ao:web:terminal-tab:${sessionId}`, stored in `sessionStorage`
-- `loadSessionTerminalTabState(id): string | null`
-- `saveSessionTerminalTabState(id, subId: string): void`
-
-**`NewTerminalModal.tsx`:**
-- Used only inside `SessionTerminalTabs.tsx` (not in layout)
-- Simple confirm modal → calls `addTerminal()` callback
-
-**`cn` utility:** `SessionTerminalTabs.tsx` uses `cn` from `@/lib/cn`. Verify this exists on upstream `main`; if not, create a minimal version:
-```typescript
-// packages/web/src/lib/cn.ts
-import { clsx } from "clsx"; import { twMerge } from "tailwind-merge";
-export function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }
-```
-(Check if `clsx` and `tailwind-merge` are already in `packages/web/package.json` on upstream.)
-
-**Polling guard (fix `257cd10f`):** `SessionTerminalTabs.tsx` has `inFlight` ref guard on polling loop — ensure this is present when copying.
-
-### Commits
-
-**Commit 1:** `feat(core): add SubSession type and sub-session lifecycle methods`
-
-Files to modify:
-- `packages/core/src/types.ts`
-  - Add `SubSession` interface (after `Session` definition)
-  - Add 4 sub-session methods to `SessionManager` interface
-- `packages/core/src/session-manager.ts`
-  - `createSubSession`: spawn new tmux session named `${parentTmuxName}-t${n}`, write metadata, return `SubSession`
-  - `listSubSessions`: read `sub-sessions/` metadata dir under session, check tmux liveness, return array (includes primary)
-  - `killSubSession`: `tmux kill-session -t ${tmuxName}`, update metadata `alive: false`
-  - `restoreTerminalSubSession`: re-create tmux session with same name, update metadata `alive: true`
-- `packages/core/src/index.ts` — export `SubSession` type
-- `packages/core/src/__tests__/test-utils.ts` — add stub impls for all 4 methods on mock `SessionManager`
-- `packages/core/src/__tests__/session-manager.test.ts`
-  - Test: `createSubSession` returns SubSession with `type: "terminal"`
-  - Test: `listSubSessions` returns primary + terminals with correct `alive` flag
-  - Test: `killSubSession` marks terminal dead
-  - Test: `restoreTerminalSubSession` returns live SubSession
-
-**Commit 2:** `feat(web): add sub-session REST API routes`
-
-Files to create (copy from source, fix imports):
-- `packages/web/src/app/api/sessions/[id]/sub-sessions/route.ts`
-  - Helper `subSessionToJson(s)`: serialize, set `runtimeHandle: null` (not serializable)
-  - GET: `listSubSessions(id)` → 200; 404 if session not found
-  - POST: `createSubSession(id)` → 201; 404 if not found
-- `packages/web/src/app/api/sessions/[id]/sub-sessions/[subId]/route.ts`
-  - DELETE: `killSubSession(id, subId)` → 200
-- `packages/web/src/app/api/sessions/[id]/sub-sessions/[subId]/restore/route.ts`
-  - POST: `restoreTerminalSubSession(id, subId)` → 200 `{ subSession }`
-
-**Commit 3:** `feat(web): add terminal tab bar UI with sub-session support`
-
-Files to create (copy from source, fix imports):
-- `packages/web/src/components/SessionTerminalTabs.tsx`
-  - **CRITICAL:** change `import { DirectTerminalGB as DirectTerminal }` → `import { DirectTerminal } from "@/components/DirectTerminal"`
-  - Keep `inFlight` ref guard on polling loop
-  - Keep `MAX_TERMINAL_SUB_SESSIONS = 5` constant
-- `packages/web/src/components/NewTerminalModal.tsx`
-- `packages/web/src/components/workspace/sessionTerminalTabState.ts`
-- `packages/web/src/lib/cn.ts` (if not on upstream)
-
-Files to modify:
-- `packages/web/src/components/SessionDetail.tsx` (or session page)
-  - Replace `<DirectTerminal sessionId={...} />` with `<SessionTerminalTabs sessionId={...} variant="agent" />`
-
-Files to create:
-- `packages/web/src/components/__tests__/SessionTerminalTabs.test.tsx`
-  - Test: primary "Agent" tab rendered on load
-  - Test: "+" button calls `createSubSession` API
-  - Test: "+" button hidden when tab count is 5
-  - Test: dead terminal tab has reduced opacity
-  - Test: clicking dead tab triggers restore API
-  - Test: `Cmd+Shift+L` advances to next tab
-  - Test: `Cmd+Shift+H` goes to previous tab
-
-### Validation
-
-- Session detail: single "Agent" tab on fresh session
-- "+" → confirm → "T1" tab appears, focused
-- Kill tmux session manually → tab turns faded on next poll (3s)
-- Click faded tab → restore fires → tab becomes active
-- 5 terminals: "+" hidden
-- Reload: previously active tab restored
-
----
-
-## PR 6a — File Tree + Preview: Backend API Routes
+## PR 6a — File Tree + Preview: Backend API Routes  <!-- renumbered from original PR7a -->
 
 **Branch:** `feat/upstream-file-tree-api`
 **Upstream base:** `main`
@@ -763,16 +659,37 @@ Files to create:
 
 ---
 
-## PR 6b — File Tree UI + Workspace Layout
+## PR 6b — File Tree UI + Workspace Layout  <!-- renumbered from original PR7b -->
 
 **Branch:** `feat/upstream-workspace-ui`
-**Upstream base:** `main`
-**Depends on:** PR 6a (API routes), PR 5 (SessionTerminalTabs), PR 2 (terminal fills height)
+**Upstream base:** `main` (after PR2/PR3 merged via `feat/upstream-pr2-pr3`)
+**Depends on:** PR 6a (API routes); PR 2 + PR 3 (already in `feat/upstream-pr2-pr3` — terminal fill, dashboard-app-shell layout)
+**Does NOT depend on PR 7 (Sub-Sessions):** terminal pane uses bare `<DirectTerminal>` for now; PR 7 swaps it in afterwards.
 
 ### Context
 
-Full workspace UI: resizable 3-pane layout (file tree | preview | terminal),
-file tree with git status colors, diff viewer, code block, markdown preview, mermaid diagrams.
+- Full workspace UI: resizable 3-pane layout (file tree | preview | terminal)
+- File tree with git status colors, diff viewer, code block, markdown preview, mermaid diagrams
+- Wraps the **existing terminal-fills-height** layout from PR2/PR3, does not replace it
+
+### Layout integration with `feat/upstream-pr2-pr3` (CRITICAL — read first)
+
+After PR2/PR3, `SessionDetail.tsx` owns the chrome:
+- Outer `<SidebarContext.Provider>` wraps everything
+- `<div className="dashboard-app-shell">` wraps header + shell
+- `<header className="dashboard-app-header">` — hamburger, brand, project label, status pill, branch pill, headline, PR popover, Kill/Restore, Orchestrator link
+- `<div className="dashboard-shell dashboard-shell--desktop">` — sidebar wrapper + main
+  - `<div className="sidebar-wrapper">` containing `<ProjectSidebar>`
+  - `<main className="session-detail-page flex-1 min-h-0 flex flex-col">` containing the terminal `<div className="flex-1 min-h-0 flex flex-col">` and `<DirectTerminal height="100%" />`
+- `<MobileBottomNav>` outside the shell
+- File: `packages/web/src/components/SessionDetail.tsx` lines ~360–810
+
+PR6b changes ONLY the inside of `<main className="session-detail-page">`:
+- The single terminal `<div className="flex-1 min-h-0 flex flex-col">` block becomes `<WorkspaceLayout>` rendering `[fileTree, preview, terminal]`
+- `WorkspaceLayout` itself must use `flex-1 min-h-0 h-full` so it inherits the terminal-fill behavior from PR2
+- Header, sidebar, mobile bottom nav are untouched
+
+**Do NOT introduce a new `(with-sidebar)` layout file.** The PR2/PR3 chrome lives inside SessionDetail; keep it that way.
 
 ### What exists in gb-personal
 
@@ -881,11 +798,18 @@ Files to create (copy from source, fix imports):
 - `packages/web/src/components/workspace/WorkspaceLayout.tsx`
 
 Files to modify:
-- `packages/web/src/app/(with-sidebar)/sessions/[id]/page.tsx`
-  - Wrap in `<WorkspaceLayout session={session}>`
-  - `fileTree` render prop: `(selectedFile, opts) => <FileTree ... />`
-  - `preview` render prop: `(selectedFile, opts) => <FilePreview ... />`
-  - `terminal` prop: `<SessionTerminalTabs sessionId={session.id} variant="agent" />`
+- `packages/web/src/components/SessionDetail.tsx`
+  - **Do NOT touch the `<header className="dashboard-app-header">` or `<ProjectSidebar>` blocks** — they are owned by PR2/PR3
+  - Locate the inner block `<div className="flex-1 min-h-0 flex flex-col">{/* terminal */}</div>` inside `<main className="session-detail-page">` (around line ~770 on `feat/upstream-pr2-pr3`)
+  - Replace just the terminal `<div>` with `<WorkspaceLayout session={session} className="flex-1 min-h-0">` rendering:
+    - `fileTree` render prop: `(selectedFile, opts) => <FileTree ... />`
+    - `preview` render prop: `(selectedFile, opts) => <FilePreview ... />`
+    - `terminal` prop: existing `<DirectTerminal sessionId={...} variant={terminalVariant} height="100%" .../>` (will be swapped to `<SessionTerminalTabs>` in PR 7)
+  - Preserve `terminalEnded` placeholder branch — only mount `WorkspaceLayout` when terminal is alive
+  - Keep the `showTerminal` rAF guard before mounting WorkspaceLayout (avoids xterm fit on hidden node — see fix `93a71a57`)
+- `packages/web/src/components/workspace/WorkspaceLayout.tsx`
+  - Root must be `h-full min-h-0 flex flex-col` so it grows inside `<main className="session-detail-page flex-1 min-h-0 flex flex-col">`
+  - Each pane wrapper must include `min-h-0` (critical for nested flex children)
 
 Files to create:
 - `packages/web/src/components/workspace/__tests__/WorkspaceLayout.test.tsx`
@@ -907,17 +831,393 @@ Files to create:
 
 ---
 
+## PR 7 — Sub-Sessions + Spawn Dialog  <!-- renumbered from original PR6 -->
+
+**Branch:** `feat/upstream-sub-sessions`
+**Upstream base:** `main` (after PR2/PR3 + PR5 merged; PR5 is the source of `SpawnSessionModal` which we extend)
+**Depends on:** PR 5 (SpawnSessionModal — we copy & adapt it for sub-sessions); PR 6b (WorkspaceLayout — terminal pane is where tabs live; PR7 swaps `<DirectTerminal>` → `<SessionTerminalTabs>` inside the workspace's terminal slot)
+
+### Conceptual model
+
+- See `subsession-concept.md` (sibling file) for the full mental model
+- A sub-session is an extra tmux pane inside the same worktree as a parent session
+- `type: "primary"` = the agent itself; `type: "terminal"` = an extra pane (no agent attached by default in gb-personal)
+- **NEW in this upstream PR**: extra panes can also have an agent **attached at creation time** with a per-pane prompt — see "Evolved spawn flow" below
+
+### What exists in gb-personal (baseline behaviour)
+
+**Core types (`packages/core/src/types.ts` lines 232–246 on `feat/upstream-correctly-to-main`):**
+```typescript
+interface SubSession {
+  id: string;                 // e.g. "ao-3-t1"
+  parentId: SessionId;        // e.g. "ao-3"
+  type: "primary" | "terminal";
+  tmuxName: string;           // e.g. "ao-3-t1"
+  workspacePath: string;      // shared with parent worktree
+  runtimeHandle: RuntimeHandle | null;
+  alive: boolean;
+}
+```
+
+**`SessionManager` interface additions (`packages/core/src/types.ts` lines 1461–1465):**
+```typescript
+createSubSession(sessionId: SessionId, options?: CreateSubSessionOptions): Promise<SubSession>
+listSubSessions(sessionId: SessionId): Promise<SubSession[]>
+killSubSession(sessionId: SessionId, subSessionId: string): Promise<void>
+restoreTerminalSubSession(parentSessionId: SessionId, subSessionId: SessionId): Promise<SubSession>
+```
+
+In gb-personal, `createSubSession` takes only `(sessionId)` — the new pane has no prompt and no agent. PR7 evolves this contract (see below).
+
+**API routes (in `app/api/sessions/[id]/sub-sessions/`):**
+- `route.ts`: GET list → `{ subSessions }`, POST create → `{ subSession }` (201)
+- `[subId]/route.ts`: DELETE kill
+- `[subId]/restore/route.ts`: POST restore → `{ subSession }`
+
+**`SessionTerminalTabs.tsx` (335 lines on gb-personal):**
+- Imports `DirectTerminalGB as DirectTerminal` — for upstream change to `import { DirectTerminal } from "@/components/DirectTerminal"`
+- `MAX_TERMINAL_SUB_SESSIONS = 5` (enforced server-side)
+- Polls `/sub-sessions` every 3s with `polling` ref guard
+- Auto-prunes dead terminals client-side (skips while a create is in flight to avoid race)
+- `Cmd+Shift+L` / `Cmd+Shift+H` = next/prev tab
+- "+" button currently calls `addTerminal()` → POST with no body → no agent, no prompt
+
+**`sessionTerminalTabState.ts`:**
+- Key: `ao:web:terminal-tab:${sessionId}`, stored in `sessionStorage`
+- `loadSessionTerminalTabState(id) / saveSessionTerminalTabState(id, subId)`
+
+**`cn` utility:** `SessionTerminalTabs.tsx` uses `cn` from `@/lib/cn`. Verify on upstream `main`; if missing, create:
+```typescript
+// packages/web/src/lib/cn.ts
+import { clsx, type ClassValue } from "clsx"; import { twMerge } from "tailwind-merge";
+export function cn(...inputs: ClassValue[]) { return twMerge(clsx(inputs)); }
+```
+(Check `clsx` and `tailwind-merge` in `packages/web/package.json`.)
+
+### Evolved spawn flow (NEW for upstream — diverges from gb-personal)
+
+**Why:** in gb-personal, clicking "+" creates a bare tmux pane with no agent and no prompt. Users complained they have to manually launch `claude` / `codex` / etc. inside the new pane every time. The new flow asks **once** at creation, then runs the agent + sends the prompt automatically.
+
+**Flow:**
+1. User clicks "+" in `SessionTerminalTabs`
+2. Opens `SpawnSubSessionModal` (new component, see PR5's `SpawnSessionModal` for the pattern)
+3. Modal fields:
+   - **Issue ID** (text): pre-filled from `parentSession.issueId`, marked `readOnly` and visually locked (greyed input + small lock icon + tooltip "Inherited from parent session")
+   - **Agent** (dropdown): same `<select>` populated from `/api/agents` as `SpawnSessionModal`. Default = parent's agent (`parentSession.metadata.agent`) if present, else first in list.
+   - **Intro prompt** (textarea): freeform, optional. If empty, behaves like today (bare pane, no agent launched). If non-empty, agent is launched and prompt sent post-launch.
+4. On submit:
+   - POST `/api/sessions/:id/sub-sessions` with body `{ agent?: string, prompt?: string }`
+   - Server calls `sessionManager.createSubSession(sessionId, { agent, prompt })`
+   - Modal closes immediately; `SessionTerminalTabs` re-polls and switches active tab to the new sub-session ID
+
+**`createSubSession` contract change (core):**
+```typescript
+interface CreateSubSessionOptions {
+  /** Agent plugin name — if set, launch agent in the new pane. If unset, bare tmux pane (legacy). */
+  agent?: string;
+  /** Initial prompt — if set AND agent set, sent post-launch via runtime.sendMessage(). */
+  prompt?: string;
+}
+createSubSession(sessionId: SessionId, options?: CreateSubSessionOptions): Promise<SubSession>
+```
+
+Implementation notes:
+- When `options.agent` is set: resolve plugin from registry, build launch command via `agent.getLaunchCommand({ prompt: undefined })` (post-launch delivery only — sub-sessions never use launch-time prompts to avoid quoting issues), spawn tmux runtime with that command, then if `options.prompt` is set, call `runtime.sendMessage(handle, options.prompt)`.
+- When `options.agent` is unset: behave exactly as today (bare tmux pane with `launchCommand: ""`).
+- `AO_SESSION_ID` env var = `subSessionId` (so the agent's hooks log to the sub-session, not the parent).
+- `AO_ISSUE_ID` env var = `parentRaw["issueId"]` (inherited from parent — matches what UI shows as locked).
+- Reuse existing `agent.setupWorkspaceHooks()` so PR-tracking still works for the sub-session's PRs.
+- Reuse existing `recordTerminalActivity` plumbing — sub-session writes to its own activity JSONL under the sub-session metadata directory.
+
+### Commits
+
+**Commit 1:** `feat(core): add SubSession type and sub-session lifecycle methods`
+
+Files to modify:
+- `packages/core/src/types.ts`
+  - Add `SubSession` interface (after `Session` definition, ~line 230)
+  - Add `CreateSubSessionOptions` interface
+  - Add 4 sub-session methods to `SessionManager` interface — `createSubSession` takes `(sessionId, options?)`
+- `packages/core/src/session-manager.ts`
+  - `createSubSession(sessionId, options?)`:
+    - Existing path when `!options?.agent`: bare tmux pane (current gb-personal behavior, `launchCommand: ""`)
+    - New path when `options.agent`: resolve plugin from `pluginRegistry`, build env (inherit parent's `AO_ISSUE_ID`), `agent.getLaunchCommand` (no prompt), spawn tmux, if `options.prompt` then `await runtime.sendMessage(handle, options.prompt)` after a short delay (200ms — matches `agent-claude-code` post-launch pattern)
+    - Write metadata: `parent: sessionId`, `type: "terminal"`, `agent: options?.agent ?? ""`, `issueId: parentRaw["issueId"] ?? ""`
+  - `listSubSessions`, `killSubSession`, `restoreTerminalSubSession` — copy from gb-personal source unchanged
+- `packages/core/src/index.ts` — export `SubSession`, `CreateSubSessionOptions`
+- `packages/core/src/__tests__/test-utils.ts` — add stub impls for all 4 methods on mock `SessionManager`
+- `packages/core/src/__tests__/session-manager.test.ts`
+  - Test: `createSubSession(id)` (no options) → bare pane, no agent
+  - Test: `createSubSession(id, { agent: "amp" })` → tmux launches `amp`, no prompt sent
+  - Test: `createSubSession(id, { agent: "amp", prompt: "hello" })` → tmux launches `amp`, `runtime.sendMessage` called with `"hello"`
+  - Test: sub-session inherits `AO_ISSUE_ID` from parent metadata
+  - Test: `listSubSessions` returns primary + terminals with correct `alive` flag
+  - Test: `killSubSession` marks terminal dead
+  - Test: `restoreTerminalSubSession` returns live SubSession
+
+**Commit 2:** `feat(web): add sub-session REST API routes with agent + prompt body`
+
+Files to create (copy from source, fix imports, add Zod body parsing on POST):
+- `packages/web/src/app/api/sessions/[id]/sub-sessions/route.ts`
+  - GET: `listSubSessions(id)` → 200; 404 if session not found
+  - POST: parse JSON body with Zod `{ agent: z.string().optional(), prompt: z.string().optional() }`; call `createSubSession(id, body)` → 201
+  - Helper `subSessionToJson(s)` (set `runtimeHandle: null` — not serializable)
+- `packages/web/src/app/api/sessions/[id]/sub-sessions/[subId]/route.ts` — DELETE: `killSubSession(id, subId)` → 200
+- `packages/web/src/app/api/sessions/[id]/sub-sessions/[subId]/restore/route.ts` — POST: `restoreTerminalSubSession(id, subId)` → 200 `{ subSession }`
+
+Files to create:
+- `packages/web/src/app/api/sessions/[id]/sub-sessions/__tests__/route.test.ts`
+  - Test: POST with `{}` calls `createSubSession(id, {})`
+  - Test: POST with `{ agent: "amp", prompt: "x" }` calls `createSubSession(id, { agent: "amp", prompt: "x" })`
+  - Test: POST with invalid body shape returns 400
+
+**Commit 3:** `feat(web): add SpawnSubSessionModal with locked issue ID + agent + prompt`
+
+Files to create:
+- `packages/web/src/components/SpawnSubSessionModal.tsx`
+  - Props: `{ open: boolean; onClose: () => void; parentSession: DashboardSession; onSubSessionCreated?: (subId: string) => void }`
+  - Fields:
+    - Issue ID input — `value={parentSession.issueId ?? ""}`, `readOnly`, `disabled`-styled, lock icon + tooltip "Inherited from parent"
+    - Agent `<select>` — fetches `/api/agents` on open (same pattern as `SpawnSessionModal`); default = `parentSession.metadata.agent` if present
+    - Intro prompt `<textarea>` — placeholder "Optional. If empty, opens a bare terminal."
+  - On submit: POST `/api/sessions/{parentSession.id}/sub-sessions` with `{ agent, prompt }` (omit empty fields)
+  - Portaled via `createPortal(modal, document.body)` with SSR guard (same as `SpawnSessionModal`)
+  - Escape key closes
+  - 80% of this file is a thin variant of `SpawnSessionModal` from PR5 — keep them as separate files; do not generalize prematurely
+- `packages/web/src/components/__tests__/SpawnSubSessionModal.test.tsx`
+  - Test: issue ID input is `readOnly` and shows parent's issueId
+  - Test: agent dropdown defaults to parent's `metadata.agent` if present
+  - Test: submit with prompt → POST body includes `{ agent, prompt }`
+  - Test: submit with empty prompt → POST body includes `{ agent }` only (no `prompt` key)
+  - Test: escape closes modal
+  - Test: portal renders modal in document.body
+
+**Commit 4:** `feat(web): add SessionTerminalTabs with sub-session spawn dialog`
+
+Files to create (copy from source, fix imports):
+- `packages/web/src/components/SessionTerminalTabs.tsx`
+  - **CRITICAL:** change `import { DirectTerminalGB as DirectTerminal }` → `import { DirectTerminal } from "@/components/DirectTerminal"`
+  - Replace the existing direct `addTerminal()` call from "+" with `setSpawnModalOpen(true)`
+  - Render `<SpawnSubSessionModal open={spawnModalOpen} parentSession={parentSession} onClose={...} onSubSessionCreated={(id) => { setActiveId(id); void loadSubs(); }} />`
+  - **Drop `NewTerminalModal.tsx`** — replaced by `SpawnSubSessionModal`. Do NOT copy `NewTerminalModal` to upstream.
+  - Keep `MAX_TERMINAL_SUB_SESSIONS = 5` enforcement (hide "+" when count == 5)
+  - Keep `inFlight` poll guard (fix `257cd10f`)
+  - Component needs `parentSession: DashboardSession` prop now (to pass to modal)
+- `packages/web/src/components/workspace/sessionTerminalTabState.ts` (copy from source)
+- `packages/web/src/lib/cn.ts` (if not on upstream after PR6b)
+
+Files to modify:
+- `packages/web/src/components/SessionDetail.tsx`
+  - Inside `<WorkspaceLayout>`'s `terminal` slot (or, if PR6b not yet merged, the bare terminal `<div>`): replace `<DirectTerminal sessionId={...} />` with `<SessionTerminalTabs sessionId={session.id} parentSession={session} variant={terminalVariant} isOpenCodeSession={isOpenCodeSession} reloadCommand={reloadCommand} />`
+  - Preserve `terminalEnded` placeholder branch — only mount `SessionTerminalTabs` when terminal is alive
+  - Preserve `showTerminal` rAF guard (fix `93a71a57`)
+
+Files to create:
+- `packages/web/src/components/__tests__/SessionTerminalTabs.test.tsx`
+  - Test: primary "Agent" tab rendered on load
+  - Test: "+" button opens `SpawnSubSessionModal` (not direct create)
+  - Test: modal submit triggers POST with `{ agent, prompt }`, then re-poll, then switch active tab
+  - Test: "+" hidden when tab count is 5
+  - Test: dead terminal tab has reduced opacity
+  - Test: clicking dead tab triggers restore API
+  - Test: `Cmd+Shift+L` advances to next tab
+  - Test: `Cmd+Shift+H` goes to previous tab
+
+### Validation
+
+- Session detail: single "Agent" tab on fresh session
+- "+" → `SpawnSubSessionModal` opens with parent's issue ID locked
+- Submit with agent + prompt → "T1" tab appears focused; agent launches; prompt visible in pane
+- Submit with empty prompt → "T1" appears as bare pane (no agent)
+- Kill tmux session manually → tab turns faded on next 3s poll
+- Click faded tab → restore fires → tab becomes active
+- 5 terminals: "+" hidden
+- Reload: previously active tab restored
+
+---
+
+## PR 8 — Sidebar Lone Terminals  <!-- new -->
+
+**Branch:** `feat/upstream-sidebar-lone-terminals`
+**Upstream base:** `main` (after PR2/PR3 merged via `feat/upstream-pr2-pr3`)
+**Depends on:** PR 2 + PR 3 (sidebar layout + dashboard-app-shell from `feat/upstream-pr2-pr3`)
+**Independent of:** PR 7 (sub-sessions). Lone terminals are NOT sub-sessions — they have no parent AO session.
+
+### Concept
+
+- A "lone terminal" is a raw tmux pane with **no parent session, no agent, no worktree** — it lives wherever the user wants (defaults to AO data dir or `$HOME`)
+- Used for quick shell tasks alongside agent supervision — `gh pr list`, `git log`, manual experiments
+- Listed in the **sidebar** under a new "Terminals" section, separate from project sessions
+- Terminal icon distinguishes them from agent-session rows
+- Persist across page reloads via flat-file metadata
+- Click → full-screen `<DirectTerminal>` page at `/terminals/[name]`
+- Killable from sidebar context menu
+
+### Storage design
+
+**Path:** `~/.agent-orchestrator/lone-terminals/{terminalId}.json`
+- Flat dir of small JSON files, one per terminal — mirrors how sessions/sub-sessions are stored
+- `terminalId`: short slug, user-supplied or auto-generated (e.g. `term-a3f9`)
+- File contents:
+  ```json
+  {
+    "id": "term-a3f9",
+    "label": "gh-prs",
+    "tmuxName": "ao-lone-term-a3f9",
+    "cwd": "/home/gb",
+    "createdAt": "2026-04-16T...",
+    "alive": true
+  }
+  ```
+- `alive` is recomputed on every list call by checking tmux liveness — file is the source of truth for existence + label, tmux is source of truth for liveness
+- On delete: kill tmux + delete JSON file
+
+**Why a separate dir, not a key in `agent-orchestrator.yaml`:**
+- YAML is project-scoped (and Zod-validated); lone terminals are ephemeral and global to the user
+- Avoids polluting per-project config with personal scratch terminals
+- Symmetric with how `~/.agent-orchestrator/{hash}-{projectId}/sessions/` works
+
+**`LoneTerminal` type (new in core):**
+```typescript
+// packages/core/src/types.ts
+export interface LoneTerminal {
+  id: string;
+  label: string;
+  tmuxName: string;
+  cwd: string;
+  createdAt: string;
+  alive: boolean;
+}
+```
+
+**`LoneTerminalManager` (new in core, separate from SessionManager):**
+```typescript
+export interface LoneTerminalManager {
+  list(): Promise<LoneTerminal[]>;
+  create(input: { label: string; cwd?: string }): Promise<LoneTerminal>;
+  kill(id: string): Promise<void>;
+  restore(id: string): Promise<LoneTerminal>;
+  get(id: string): Promise<LoneTerminal | null>;
+}
+```
+
+Implementation:
+- Uses the same tmux runtime plugin as sessions, but with `launchCommand: ""` (raw shell)
+- `tmuxName: "ao-lone-${id}"` — `ao-lone-` prefix prevents collision with session tmux names
+- `cwd` defaults to `os.homedir()` if not supplied
+- File location: `path.join(os.homedir(), ".agent-orchestrator", "lone-terminals")`
+
+### API routes (new)
+
+- `GET /api/lone-terminals` → `{ terminals: LoneTerminal[] }`
+- `POST /api/lone-terminals` body `{ label: string; cwd?: string }` → 201 `{ terminal }`
+- `DELETE /api/lone-terminals/[id]` → 200
+- `POST /api/lone-terminals/[id]/restore` → 200 `{ terminal }`
+- All routes validate `id` matches `^[a-z0-9-]{4,32}$` to prevent path traversal in JSON file lookup
+
+### Sidebar integration
+
+- New section in `ProjectSidebar.tsx`, **below** the projects list, **above** filter toggles
+- Header: "Terminals" + "+" button (opens `NewLoneTerminalModal`)
+- Each terminal row: terminal icon (square `<svg>` distinct from agent icon) + label + status dot (green = alive, gray = dead)
+- Click row → `router.push("/terminals/" + encodeURIComponent(id))`
+- Hover → 3-dot context menu → Restore (if dead) / Kill (if alive) / Delete
+- Empty state: small "No terminals yet" muted text
+- Polling: piggyback on existing sidebar 5s polling — add `fetch("/api/lone-terminals")` alongside `fetch("/api/sessions")`
+
+### Full-screen terminal page
+
+- Route: `app/terminals/[name]/page.tsx` (no nested route group; matches PR2/PR3 layout pattern)
+- Renders the same chrome as `SessionDetail` (header + ProjectSidebar) but with lone-terminal-specific topbar (label, kill button, no PR/branch)
+- Body: `<DirectTerminal sessionId={tmuxName} variant="agent" height="100%" />` — terminal WS multiplexes by tmux name, so passing `tmuxName` works
+- Title: `terminal | ${label}`
+
+### Components needed
+
+- `packages/web/src/components/NewLoneTerminalModal.tsx` — simple form: `label` (required), `cwd` (optional, defaults to `~`); submit POSTs to `/api/lone-terminals`
+- `packages/web/src/components/LoneTerminalRow.tsx` — sidebar row component
+- `packages/web/src/components/LoneTerminalDetail.tsx` — full-screen page chrome (header + DirectTerminal)
+- `packages/web/src/lib/lone-terminal.ts` — client-side fetch helpers + types
+
+### Commits
+
+**Commit 1:** `feat(core): add LoneTerminal type and LoneTerminalManager`
+
+Files to create:
+- `packages/core/src/lone-terminal-manager.ts` — full implementation as described above; uses `runtime` plugin from registry; file I/O under `~/.agent-orchestrator/lone-terminals/`
+- `packages/core/src/__tests__/lone-terminal-manager.test.ts` — list/create/kill/restore happy paths + invalid id rejection
+
+Files to modify:
+- `packages/core/src/types.ts` — add `LoneTerminal` interface, `LoneTerminalManager` interface
+- `packages/core/src/index.ts` — export both types and the manager factory
+
+**Commit 2:** `feat(web): add lone-terminals API routes`
+
+Files to create (with id-validation regex on every dynamic route):
+- `packages/web/src/app/api/lone-terminals/route.ts` — GET, POST
+- `packages/web/src/app/api/lone-terminals/[id]/route.ts` — DELETE
+- `packages/web/src/app/api/lone-terminals/[id]/restore/route.ts` — POST
+- `packages/web/src/app/api/lone-terminals/__tests__/route.test.ts` — body validation, success path, 400 on invalid id
+
+Files to modify:
+- `packages/web/src/lib/services.ts` — instantiate `LoneTerminalManager` alongside `SessionManager`, expose via `getServices()`
+
+**Commit 3:** `feat(web): add lone terminal sidebar section + new-terminal modal`
+
+Files to create:
+- `packages/web/src/components/NewLoneTerminalModal.tsx`
+- `packages/web/src/components/LoneTerminalRow.tsx`
+- `packages/web/src/components/__tests__/LoneTerminalRow.test.tsx` — render label, status dot, click navigates, context menu actions call API
+
+Files to modify:
+- `packages/web/src/components/ProjectSidebar.tsx`
+  - Add `loneTerminals?: LoneTerminal[]` prop
+  - Render new "Terminals" section between projects list and filter toggles
+  - Hidden if `loneTerminals?.length === 0` and "+" button keeps it discoverable
+- `packages/web/src/components/Dashboard.tsx`
+  - Fetch `/api/lone-terminals` in the same effect that fetches projects/sessions
+  - Pass `loneTerminals` down to `<ProjectSidebar>`
+- `packages/web/src/components/SessionDetail.tsx`
+  - Same: pass `loneTerminals` down to its `<ProjectSidebar>` instance
+- `packages/web/src/app/globals.css`
+  - Add `.sidebar-lone-terminal-row`, `.sidebar-section-divider` styles consistent with existing `.sidebar-project-row` styles
+
+**Commit 4:** `feat(web): add full-screen lone terminal page at /terminals/[name]`
+
+Files to create:
+- `packages/web/src/app/terminals/[name]/page.tsx` — server component that resolves the lone terminal, returns `notFound()` if missing, renders `<LoneTerminalDetail>`
+- `packages/web/src/components/LoneTerminalDetail.tsx` — copies the PR2/PR3 chrome pattern from SessionDetail (header + ProjectSidebar + main with `<DirectTerminal>`); kill button calls `DELETE /api/lone-terminals/[id]` then redirects to `/`
+- `packages/web/src/components/__tests__/LoneTerminalDetail.test.tsx`
+
+### Validation
+
+- Sidebar: "Terminals" section visible; "+" button opens modal
+- Submit modal → row appears in sidebar with terminal icon + green status dot
+- Click row → navigate to `/terminals/{id}` → full-screen DirectTerminal connects to tmux
+- Type `whoami` in terminal → output appears
+- Reload page → terminal persists (still in sidebar, still alive)
+- Sidebar context menu → Kill → row turns gray (dead), tmux session ends
+- Context menu → Restore → row green again, new tmux session attached
+- Context menu → Delete → row vanishes, JSON file deleted
+- Lone terminals don't appear in any project's session list
+
+---
+
 ## Sequencing
 
 ```
 PR1  (amp plugin)            ← no deps
-PR2  (terminal layout)       ← no deps, parallel with PR1
-PR3  (topbar/sidebar)        ← no deps, parallel with PR1+PR2
-PR4  (configurable prompt)   ← no deps, parallel with PR1+PR2+PR3
+PR2  (terminal layout)       ← merged via feat/upstream-pr2-pr3
+PR3  (topbar/sidebar)        ← merged via feat/upstream-pr2-pr3
+PR4  (configurable prompt)   ← no deps, parallel with PR1
 PR5  (new session UI)        ← no deps (agent dropdown is dynamic)
-PR6  (sub-sessions)          ← no deps (self-contained)
-PR7a (file/diff API)         ← no deps
-PR7b (workspace UI)          ← after PR6 (SessionTerminalTabs) + PR2 (terminal height) + PR7a (API routes)
+PR6a (file/diff API)         ← no deps
+PR6b (workspace UI)          ← after PR6a + PR2 (terminal height already merged)
+PR7  (sub-sessions)          ← after PR5 (SpawnSubSessionModal extends SpawnSessionModal pattern) + PR6b (swaps DirectTerminal inside WorkspaceLayout's terminal slot)
+PR8  (lone terminals)        ← after PR2/PR3 sidebar layout (already merged); independent of PR6/PR7
 ```
 
-PRs 1–7a can all be opened simultaneously. PR7b waits for 2, 6, 7a.
+- PR2 + PR3 are already merged via `feat/upstream-pr2-pr3`
+- PRs 1, 4, 5, 6a, 8 can all be opened in parallel against `main`
+- PR6b waits for PR6a
+- PR7 waits for PR5 + PR6b (so sub-session tabs land inside the workspace's terminal pane)
