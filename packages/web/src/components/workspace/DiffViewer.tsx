@@ -1,12 +1,18 @@
 "use client";
 
 import { useDiffContent, type DiffContentResponse } from "./useDiffContent";
-import { parseUnifiedDiff, syntheticUntrackedHunks, type DiffHunk, type DiffLine } from "./diffParse";
+import {
+  parseUnifiedDiff,
+  syntheticUntrackedHunks,
+  type DiffHunk,
+  type DiffLine,
+} from "./diffParse";
 import { highlightDiffLine, languageForFilePath } from "./codeHighlight";
 
 interface DiffViewerProps {
   sessionId: string;
   selectedFile: string | null;
+  collapsed?: boolean;
 }
 
 function buildHunks(data: DiffContentResponse): DiffHunk[] {
@@ -41,15 +47,13 @@ function DiffLineContent({ line, languageId }: { line: DiffLine; languageId: str
   if (languageId && line.content.length > 0) {
     const html = highlightDiffLine(line.content, languageId);
     if (html !== null) {
-      return (
-        <span className="workspace-diff-content" dangerouslySetInnerHTML={{ __html: html }} />
-      );
+      return <span className="workspace-diff-content" dangerouslySetInnerHTML={{ __html: html }} />;
     }
   }
   return <span className="workspace-diff-content">{line.content}</span>;
 }
 
-export function DiffViewer({ sessionId, selectedFile }: DiffViewerProps) {
+export function DiffViewer({ sessionId, selectedFile, collapsed = false }: DiffViewerProps) {
   const { data, error, loading } = useDiffContent(sessionId, selectedFile);
 
   if (!selectedFile) {
@@ -120,20 +124,21 @@ export function DiffViewer({ sessionId, selectedFile }: DiffViewerProps) {
       {hunks.map((hunk, i) => (
         <div key={i}>
           <div className="workspace-diff-hunk-header">{hunk.header}</div>
-          {hunk.lines.map((line, j) => (
-            <div key={j} className={`workspace-diff-line workspace-diff-line--${line.type}`}>
-              <span className="workspace-diff-gutter workspace-diff-gutter--old">
-                {line.oldLineNumber ?? ""}
-              </span>
-              <span className="workspace-diff-gutter workspace-diff-gutter--new">
-                {line.newLineNumber ?? ""}
-              </span>
-              <span className="workspace-diff-marker">
-                {line.type === "added" ? "+" : line.type === "removed" ? "-" : " "}
-              </span>
-              <DiffLineContent line={line} languageId={languageId} />
-            </div>
-          ))}
+          {!collapsed &&
+            hunk.lines.map((line, j) => (
+              <div key={j} className={`workspace-diff-line workspace-diff-line--${line.type}`}>
+                <span className="workspace-diff-gutter workspace-diff-gutter--old">
+                  {line.oldLineNumber ?? ""}
+                </span>
+                <span className="workspace-diff-gutter workspace-diff-gutter--new">
+                  {line.newLineNumber ?? ""}
+                </span>
+                <span className="workspace-diff-marker">
+                  {line.type === "added" ? "+" : line.type === "removed" ? "-" : " "}
+                </span>
+                <DiffLineContent line={line} languageId={languageId} />
+              </div>
+            ))}
         </div>
       ))}
     </pre>

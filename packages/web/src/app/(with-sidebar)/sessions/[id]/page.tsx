@@ -3,10 +3,7 @@
 import { useEffect, useState, useCallback } from "react";
 import { useParams, useSearchParams } from "next/navigation";
 import { isOrchestratorSession } from "@aoagents/ao-core/types";
-import {
-  setTerminalConnection,
-  clearTerminalConnection,
-} from "@/lib/terminal-connection-store";
+import { setTerminalConnection, clearTerminalConnection } from "@/lib/terminal-connection-store";
 import { WorkspaceLayout } from "@/components/workspace/WorkspaceLayout";
 import { FileTree } from "@/components/workspace/FileTree";
 import { FilePreview } from "@/components/workspace/FilePreview";
@@ -136,9 +133,9 @@ export default function SessionPage() {
               onFileSelected={onFileSelected}
             />
           ),
-          preview: (file, { diffMode }) =>
+          preview: (file, { diffMode, diffCollapsed }) =>
             diffMode ? (
-              <DiffViewer sessionId={id} selectedFile={file} />
+              <DiffViewer sessionId={id} selectedFile={file} collapsed={diffCollapsed} />
             ) : (
               <FilePreview sessionId={id} selectedFile={file} />
             ),
