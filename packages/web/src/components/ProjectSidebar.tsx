@@ -6,7 +6,7 @@ import { cn } from "@/lib/cn";
 import type { ProjectInfo } from "@/lib/project-name";
 import { getAttentionLevel, type DashboardSession, type AttentionLevel } from "@/lib/types";
 import { isOrchestratorSession } from "@aoagents/ao-core/types";
-import { getSessionTitle } from "@/lib/format";
+import { getSessionTitle, humanizeBranch } from "@/lib/format";
 import { ThemeToggle } from "./ThemeToggle";
 
 interface ProjectSidebarProps {
@@ -132,12 +132,13 @@ function ProjectSidebarInner({
       <aside className={cn(
         "project-sidebar project-sidebar--collapsed flex flex-col h-full items-center py-2 gap-1 overflow-y-auto",
       )}>
-        {projects.map((project) => {
+        {projects.map((project, idx) => {
           const workerSessions = sessionsByProject.get(project.id) ?? [];
           const visibleSessions = showDone ? workerSessions : workerSessions.filter(s => getAttentionLevel(s) !== "done");
           const projectAbbr = project.name.slice(0, 2).toUpperCase();
           return (
             <div key={project.id} className="flex flex-col items-center gap-0.5 w-full px-1">
+              {idx > 0 && <div className="project-sidebar__collapsed-divider" aria-hidden="true" />}
               <a
                 href={`/?project=${encodeURIComponent(project.id)}`}
                 className={cn(
@@ -151,25 +152,31 @@ function ProjectSidebarInner({
               </a>
               {visibleSessions.slice(0, 5).map((session) => {
                 const level = getAttentionLevel(session);
-                const title = session.branch ?? getSessionTitle(session);
-                const abbr = title.slice(0, 3).toUpperCase();
+                const rawTitle = session.branch ?? getSessionTitle(session);
+                const displayTitle = session.branch ? humanizeBranch(session.branch) || rawTitle : rawTitle;
+                const abbr = displayTitle.replace(/\s+/g, "").slice(0, 3).toUpperCase();
                 const isActive = activeSessionId === session.id;
+                const sessionHref = `/sessions/${encodeURIComponent(session.id)}?project=${encodeURIComponent(project.id)}`;
                 return (
-                  <button
+                  <a
                     key={session.id}
-                    type="button"
-                    onClick={() => navigate(`/sessions/${encodeURIComponent(session.id)}?project=${encodeURIComponent(project.id)}`)}
+                    href={sessionHref}
+                    onClick={(e) => {
+                      if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+                      e.preventDefault();
+                      navigate(sessionHref);
+                    }}
                     className={cn(
                       "project-sidebar__collapsed-session-btn",
                       isActive && "project-sidebar__collapsed-session-btn--active",
                     )}
                     data-level={level}
-                    title={title}
-                    aria-label={title}
+                    title={rawTitle}
+                    aria-label={rawTitle}
                   >
                     <span className="project-sidebar__session-abbr-first">{abbr[0]}</span>
                     <span className="project-sidebar__session-abbr-rest">{abbr.slice(1)}</span>
-                  </button>
+                  </a>
                 );
               })}
               {visibleSessions.length > 5 && (
@@ -289,16 +296,16 @@ function ProjectSidebarInner({
                         const level = getAttentionLevel(session);
                         const isSessionActive = activeSessionId === session.id;
                         const title = session.branch ?? getSessionTitle(session);
+                        const sessionHref = `/sessions/${encodeURIComponent(session.id)}?project=${encodeURIComponent(project.id)}`;
                         return (
-                          <button
+                          <a
                             key={session.id}
-                            type="button"
-                            onClick={() =>
-                              navigate(
-                                `/sessions/${encodeURIComponent(session.id)}?project=${encodeURIComponent(project.id)}`,
-                                session,
-                              )
-                            }
+                            href={sessionHref}
+                            onClick={(e) => {
+                              if (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1) return;
+                              e.preventDefault();
+                              navigate(sessionHref, session);
+                            }}
                             className={cn(
                               "project-sidebar__sess-row",
                               isSessionActive && "project-sidebar__sess-row--active",
@@ -316,14 +323,14 @@ function ProjectSidebarInner({
                               >
                                 {title}
                               </span>
-                              <div className="text-xs text-[var(--color-text-muted)]">
-                                {session.id}
+                              <div className="project-sidebar__sess-meta">
+                                <span className="project-sidebar__sess-id">{session.id}</span>
+                                <span className="project-sidebar__sess-status">
+                                  {LEVEL_LABELS[level]}
+                                </span>
                               </div>
                             </div>
-                            <span className="project-sidebar__sess-status">
-                              {LEVEL_LABELS[level]}
-                            </span>
-                          </button>
+                          </a>
                         );
                       })
                     ) : (

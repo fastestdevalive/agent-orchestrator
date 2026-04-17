@@ -3507,6 +3507,12 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
   letter-spacing: 0.02em;
   color: var(--color-text-muted);
   text-transform: uppercase;
+  text-decoration: none;
+}
+.project-sidebar__collapsed-session-btn:hover,
+.project-sidebar__collapsed-session-btn:focus,
+.project-sidebar__collapsed-session-btn:visited {
+  text-decoration: none;
 }
 
 .project-sidebar__collapsed-session-btn:hover {
@@ -3540,6 +3546,13 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
   padding: 1px 0;
 }
 
+.project-sidebar__collapsed-divider {
+  width: 22px;
+  height: 1px;
+  background: var(--color-border-subtle);
+  margin: 6px 0 4px;
+}
+
 /* Session row: dot + label + status */
 .project-sidebar__sess-row {
   display: flex;
@@ -3552,6 +3565,15 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
   cursor: pointer;
   transition: background 80ms;
   text-align: left;
+  text-decoration: none;
+  color: inherit;
+}
+
+.project-sidebar__sess-row:hover,
+.project-sidebar__sess-row:focus,
+.project-sidebar__sess-row:visited {
+  text-decoration: none;
+  color: inherit;
 }
 
 .project-sidebar__sess-row:hover {
@@ -3574,19 +3596,35 @@ html.light .xterm .xterm-viewport:hover::-webkit-scrollbar-thumb:active {
 }
 
 .project-sidebar__sess-label--active {
-  color: var(--color-text-primary);
+  color: var(--color-accent-amber);
   font-weight: 500;
+}
+
+/* Session meta row: ID + status on one line */
+.project-sidebar__sess-meta {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 1px;
+}
+
+.project-sidebar__sess-id {
+  font-size: 9px;
+  color: var(--color-text-muted);
+  font-family: var(--font-mono);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
 /* Session status text */
 .project-sidebar__sess-status {
-  font-size: 10px;
+  font-size: 9px;
   font-family: var(--font-mono);
   color: var(--color-text-muted);
   flex-shrink: 0;
-  max-width: 56px;
-  overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
